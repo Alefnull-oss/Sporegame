@@ -1,0 +1,6 @@
+{
+  "name": "Spore Célula",
+  "description": "Juego evolutivo microscópico estilo Spore: absorbe ADN, evoluciona partes celulares, nada en la sopa primordial y domina la cadena trófica.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,19 @@
+<resources>
+    <string name="app_name">Spore Célula</string>
+    <string name="game_title">SPORE: ESTADIO DE CÉLULA</string>
+    <string name="subtitle_simulation">Evolución en la Sopa Primordial</string>
+    <string name="play_button">Nadar en el Caldo</string>
+    <string name="editor_button">Laboratorio de ADN</string>
+    <string name="bestiary_button">Cadena Trófica</string>
+    <string name="dna_currency">ADN</string>
+    <string name="hp_label">Salud</string>
+    <string name="size_label">Tamaño</string>
+    <string name="diet_herbivore">Herbívoro</string>
+    <string name="diet_carnivore">Carnívoro</string>
+    <string name="diet_omnivore">Omnívoro</string>
+    <string name="trophic_level_0">Productores Primarios</string>
+    <string name="trophic_level_1">Consumidores Primarios (Herbívoros)</string>
+    <string name="trophic_level_2">Consumidores Secundarios (Omnívoros)</string>
+    <string name="trophic_level_3">Depredadores Microscópicos</string>
+    <string name="trophic_level_4">Súper Depredadores Ápex</string>
+</resources>
