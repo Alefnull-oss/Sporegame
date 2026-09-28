@@ -14,6 +14,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.spore.ui.screens.CellEditorScreen
+import com.example.spore.ui.screens.GalaxyMapScreen
 import com.example.spore.ui.screens.GameScreen
 import com.example.spore.ui.screens.MainMenuScreen
 import com.example.spore.ui.screens.TrophicWebScreen
@@ -42,6 +43,7 @@ class MainActivity : ComponentActivity() {
                         label = "screen_transition"
                     ) { screen ->
                         when (screen) {
+                            AppScreen.GALAXY_MAP -> GalaxyMapScreen(viewModel = viewModel)
                             AppScreen.MAIN_MENU -> MainMenuScreen(viewModel = viewModel)
                             AppScreen.GAME -> GameScreen(viewModel = viewModel)
                             AppScreen.CELL_EDITOR -> CellEditorScreen(viewModel = viewModel)

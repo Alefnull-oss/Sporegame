@@ -7,6 +7,8 @@ import androidx.room.RoomDatabase
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.example.spore.data.model.CellEvolutionEntity
 import com.example.spore.data.model.GameStatsEntity
+import com.example.spore.data.model.PlanetDefinition
+import com.example.spore.data.model.PlanetSaveEntity
 import com.example.spore.data.model.TrophicSpeciesEntity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -16,9 +18,10 @@ import kotlinx.coroutines.launch
     entities = [
         CellEvolutionEntity::class,
         TrophicSpeciesEntity::class,
-        GameStatsEntity::class
+        GameStatsEntity::class,
+        PlanetSaveEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class SporeDatabase : RoomDatabase() {
@@ -34,7 +37,8 @@ abstract class SporeDatabase : RoomDatabase() {
                     context.applicationContext,
                     SporeDatabase::class.java,
                     "spore_primordial.db"
-                ).addCallback(object : Callback() {
+                ).fallbackToDestructiveMigration()
+                .addCallback(object : Callback() {
                     override fun onCreate(db: SupportSQLiteDatabase) {
                         super.onCreate(db)
                         CoroutineScope(Dispatchers.IO).launch {
@@ -42,12 +46,44 @@ abstract class SporeDatabase : RoomDatabase() {
                             dao.saveCellEvolution(CellEvolutionEntity())
                             dao.saveGameStats(GameStatsEntity())
                             dao.insertDefaultSpecies(DEFAULT_TROPHIC_SPECIES)
+                            dao.insertDefaultPlanetSaves(DEFAULT_PLANET_SAVES)
                         }
                     }
                 }).build()
                 INSTANCE = instance
                 instance
             }
+        }
+
+        val DEFAULT_PLANET_SAVES = PlanetDefinition.PLANETS.map { planet ->
+            PlanetSaveEntity(
+                planetId = planet.id,
+                planetName = planet.name,
+                speciesName = when (planet.id) {
+                    "planet_aqualis" -> "Protocélula Alfa"
+                    "planet_rubrum" -> "Férrea Voraz"
+                    "planet_toxis" -> "Sulfurio Cloro"
+                    "planet_ametistia" -> "Metanocélula Abisal"
+                    "planet_solaria" -> "Auracélula Solar"
+                    else -> "Protocélula"
+                },
+                generation = 1,
+                dnaPoints = 50,
+                biomass = 25f,
+                mouthType = when (planet.id) {
+                    "planet_rubrum" -> "CARNIVORE"
+                    "planet_ametistia" -> "OMNIVORE"
+                    else -> "HERBIVORE"
+                },
+                flagellaCount = 1,
+                ciliaCount = 1,
+                jetCount = 0,
+                spikesCount = if (planet.id == "planet_rubrum") 1 else 0,
+                poisonGland = planet.id == "planet_toxis",
+                electricOrgan = planet.id == "planet_ametistia",
+                primaryColorHex = planet.planetColorHex,
+                hasPlayed = planet.id == "planet_aqualis" // Aqualis unlocked by default
+            )
         }
 
         val DEFAULT_TROPHIC_SPECIES = listOf(

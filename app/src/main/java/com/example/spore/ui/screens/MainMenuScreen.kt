@@ -1,5 +1,6 @@
 package com.example.spore.ui.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -24,6 +25,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Science
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -65,6 +67,11 @@ fun MainMenuScreen(
     viewModel: SporeViewModel,
     modifier: Modifier = Modifier
 ) {
+    BackHandler {
+        viewModel.navigateTo(AppScreen.GALAXY_MAP)
+    }
+
+    val selectedPlanet by viewModel.selectedPlanet.collectAsStateWithLifecycle()
     val cellConfig by viewModel.cellEvolution.collectAsStateWithLifecycle()
     val draft = cellConfig ?: CellEvolutionEntity()
     val stats = remember(draft) { CellEvolutionConfig.calculateStats(draft) }
@@ -252,10 +259,36 @@ fun MainMenuScreen(
                     .padding(bottom = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
+                // Change Planet / Galaxy Button
+                OutlinedButton(
+                    onClick = { viewModel.navigateTo(AppScreen.GALAXY_MAP) },
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(selectedPlanet.atmosphereColorHex)),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(46.dp)
+                        .testTag("change_planet_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Public,
+                        contentDescription = null,
+                        tint = Color(selectedPlanet.atmosphereColorHex),
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Planeta: ${selectedPlanet.name} • ${selectedPlanet.oceanName}",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp,
+                        color = Color(selectedPlanet.atmosphereColorHex)
+                    )
+                }
+
                 // Play Button
                 Button(
                     onClick = { viewModel.navigateTo(AppScreen.GAME) },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E5FF)),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(selectedPlanet.atmosphereColorHex)),
                     shape = RoundedCornerShape(16.dp),
                     modifier = Modifier
                         .fillMaxWidth()
@@ -270,7 +303,7 @@ fun MainMenuScreen(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "Nadar en la Sopa Primordial",
+                        text = "Nadar en ${selectedPlanet.name}",
                         color = Color.Black,
                         fontWeight = FontWeight.ExtraBold,
                         fontSize = 16.sp

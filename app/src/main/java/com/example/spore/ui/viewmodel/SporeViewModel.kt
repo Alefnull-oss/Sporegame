@@ -12,10 +12,11 @@ import com.example.spore.data.db.SporeDatabase
 import com.example.spore.data.db.SporeRepository
 import com.example.spore.data.model.CellEvolutionEntity
 import com.example.spore.data.model.GameStatsEntity
+import com.example.spore.data.model.PlanetDefinition
+import com.example.spore.data.model.PlanetSaveEntity
 import com.example.spore.data.model.TrophicSpeciesEntity
 import com.example.spore.game.engine.CellEvolutionConfig
 import com.example.spore.game.engine.GameSimulation
-import com.example.spore.game.engine.Vector2
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -24,6 +25,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 enum class AppScreen {
+    GALAXY_MAP,
     MAIN_MENU,
     GAME,
     CELL_EDITOR,
@@ -43,6 +45,9 @@ class SporeViewModel(application: Application) : AndroidViewModel(application) {
         application.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
     }
 
+    val allPlanetSaves: StateFlow<List<PlanetSaveEntity>> = repository.allPlanetSaves
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
     val cellEvolution: StateFlow<CellEvolutionEntity?> = repository.cellEvolution
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
@@ -52,8 +57,11 @@ class SporeViewModel(application: Application) : AndroidViewModel(application) {
     val gameStats: StateFlow<GameStatsEntity?> = repository.gameStats
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
-    private val _currentScreen = MutableStateFlow(AppScreen.MAIN_MENU)
+    private val _currentScreen = MutableStateFlow(AppScreen.GALAXY_MAP)
     val currentScreen: StateFlow<AppScreen> = _currentScreen.asStateFlow()
+
+    private val _selectedPlanet = MutableStateFlow(PlanetDefinition.PLANETS[0])
+    val selectedPlanet: StateFlow<PlanetDefinition> = _selectedPlanet.asStateFlow()
 
     private val _editorDraft = MutableStateFlow(CellEvolutionEntity())
     val editorDraft: StateFlow<CellEvolutionEntity> = _editorDraft.asStateFlow()
@@ -63,29 +71,68 @@ class SporeViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         viewModelScope.launch {
-            repository.ensureDefaultSpecies()
+            repository.ensureDefaults()
             val initial = repository.getCellEvolutionSync()
             _editorDraft.value = initial
-            initSimulation(initial)
+            initSimulation(initial, _selectedPlanet.value)
+        }
+    }
+
+    fun selectPlanet(planet: PlanetDefinition) {
+        _selectedPlanet.value = planet
+        viewModelScope.launch {
+            val save = repository.getPlanetSaveSync(planet.id)
+            if (save != null) {
+                val evolution = save.toCellEvolutionEntity()
+                _editorDraft.value = evolution
+                repository.saveCellEvolution(evolution)
+                gameSimulation?.setPlanet(planet)
+                gameSimulation?.updateEvolutionConfig(evolution)
+            }
+        }
+    }
+
+    fun launchPlanet(planet: PlanetDefinition) {
+        selectPlanet(planet)
+        viewModelScope.launch {
+            val save = repository.getPlanetSaveSync(planet.id)
+            if (save != null && !save.hasPlayed) {
+                repository.savePlanetSave(save.copy(hasPlayed = true))
+            }
+            navigateTo(AppScreen.GAME)
+        }
+    }
+
+    fun resetPlanet(planetId: String) {
+        viewModelScope.launch {
+            repository.resetPlanet(planetId)
+            val def = PlanetDefinition.getById(planetId)
+            if (_selectedPlanet.value.id == planetId) {
+                selectPlanet(def)
+            }
         }
     }
 
     fun navigateTo(screen: AppScreen) {
         if (screen == AppScreen.CELL_EDITOR) {
-            // Sync editor draft with latest cell configuration
             cellEvolution.value?.let { _editorDraft.value = it }
         } else if (screen == AppScreen.GAME) {
-            // Apply current cell config to active simulation
             cellEvolution.value?.let { gameSimulation?.updateEvolutionConfig(it) }
         }
         _currentScreen.value = screen
     }
 
-    private fun initSimulation(evolution: CellEvolutionEntity) {
+    private fun initSimulation(evolution: CellEvolutionEntity, planet: PlanetDefinition) {
         gameSimulation = GameSimulation(
             initialEvolution = evolution,
+            planetDefinition = planet,
             onDnaCollected = { amount ->
                 viewModelScope.launch {
+                    val pId = _selectedPlanet.value.id
+                    val pSave = repository.getPlanetSaveSync(pId)
+                    if (pSave != null) {
+                        repository.savePlanetSave(pSave.copy(dnaPoints = pSave.dnaPoints + amount))
+                    }
                     val current = repository.getCellEvolutionSync()
                     repository.saveCellEvolution(current.copy(dnaPoints = current.dnaPoints + amount))
                 }
@@ -105,6 +152,7 @@ class SporeViewModel(application: Application) : AndroidViewModel(application) {
                     repository.recordKilledBy(speciesId)
                     val sim = gameSimulation ?: return@launch
                     repository.updateStatsOnGameEnd(
+                        planetId = _selectedPlanet.value.id,
                         score = (sim.player.biomass * 10).toInt(),
                         maxBiomass = sim.player.biomass,
                         dnaEarned = 0,
@@ -328,6 +376,30 @@ class SporeViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val updated = _editorDraft.value.copy(generation = _editorDraft.value.generation + 1)
             repository.saveCellEvolution(updated)
+            // Also update active planet save file
+            val pId = _selectedPlanet.value.id
+            val pSave = repository.getPlanetSaveSync(pId)
+            if (pSave != null) {
+                repository.savePlanetSave(
+                    pSave.copy(
+                        speciesName = updated.speciesName,
+                        generation = updated.generation,
+                        dnaPoints = updated.dnaPoints,
+                        biomass = updated.biomass,
+                        mouthType = updated.mouthType,
+                        flagellaCount = updated.flagellaCount,
+                        ciliaCount = updated.ciliaCount,
+                        jetCount = updated.jetCount,
+                        spikesCount = updated.spikesCount,
+                        poisonGland = updated.poisonGland,
+                        electricOrgan = updated.electricOrgan,
+                        armorPlates = updated.armorPlates,
+                        eyeType = updated.eyeType,
+                        primaryColorHex = updated.primaryColorHex,
+                        hasPlayed = true
+                    )
+                )
+            }
             gameSimulation?.updateEvolutionConfig(updated)
             navigateTo(AppScreen.GAME)
         }
