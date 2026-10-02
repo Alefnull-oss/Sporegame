@@ -3,6 +3,9 @@ package com.example.spore.game.engine
 import androidx.compose.ui.graphics.Color
 import com.example.spore.data.model.CellEvolutionEntity
 import com.example.spore.data.model.PlanetDefinition
+import com.example.spore.game.physics.ElasticAppendageChain
+import com.example.spore.game.physics.SoftBodyMembrane
+import com.example.spore.game.physics.SporePhysicsEngine
 import com.example.spore.game.terrain.OceanTerrainSystem
 import com.example.spore.game.water.WaterRippleSystem
 import java.util.concurrent.atomic.AtomicLong
@@ -52,6 +55,7 @@ class GameSimulation(
     // Oceanic Systems: Water ripples, hydrodynamic wakes, seabed terrain & currents
     val rippleSystem = WaterRippleSystem(WORLD_WIDTH, WORLD_HEIGHT)
     val oceanTerrain = OceanTerrainSystem(WORLD_WIDTH, planetDefinition)
+    val physicsEngine = SporePhysicsEngine()
     private var playerSwimRippleTimer = 0f
 
     val foods = mutableListOf<FoodParticle>()
@@ -62,8 +66,10 @@ class GameSimulation(
     val ambientParticles = mutableListOf<AmbientParticle>()
 
     // Anti-lag spatial partition grids (O(1) neighbor lookups)
-    private val foodGrid = SpatialGrid<FoodParticle>(WORLD_WIDTH, WORLD_HEIGHT, cellSize = 300f)
-    private val microbeGrid = SpatialGrid<AiMicrobe>(WORLD_WIDTH, WORLD_HEIGHT, cellSize = 300f)
+    private val foodGrid = SpatialGrid<FoodParticle>(WORLD_WIDTH, WORLD_HEIGHT, cellSize = 450f)
+    private val microbeGrid = SpatialGrid<AiMicrobe>(WORLD_WIDTH, WORLD_HEIGHT, cellSize = 450f)
+    private var isFoodGridDirty = true
+    private val discoveredSpecies = HashSet<String>()
 
     // Nutrient bloom centers (hotspots where phytoplankton concentrates)
     private val bloomCenters = listOf(
@@ -138,18 +144,17 @@ class GameSimulation(
     }
 
     private fun spawnScatteredFood() {
-        // Choose whether to spawn in a nutrient bloom or drifting in open space
-        val isBloom = Random.nextFloat() < 0.70f
-        val pos = if (isBloom) {
-            val center = bloomCenters.random()
-            val angle = Random.nextFloat() * 2f * PI.toFloat()
-            val dist = Random.nextFloat() * 380f
-            Vector2(
-                (center.x + cos(angle) * dist).coerceIn(100f, WORLD_WIDTH - 100f),
-                (center.y + sin(angle) * dist).coerceIn(100f, WORLD_HEIGHT - 100f)
-            )
-        } else {
-            Vector2(Random.nextFloat() * WORLD_WIDTH, Random.nextFloat() * WORLD_HEIGHT)
+        // Choose whether to spawn in a FastNoiseLite cellular nutrient bloom or drifting in open water
+        val isBloom = Random.nextFloat() < 0.65f
+        var pos = Vector2(Random.nextFloat() * WORLD_WIDTH, Random.nextFloat() * WORLD_HEIGHT)
+        if (isBloom) {
+            for (attempt in 0 until 6) {
+                val candidate = Vector2(Random.nextFloat() * WORLD_WIDTH, Random.nextFloat() * WORLD_HEIGHT)
+                if (oceanTerrain.isNutrientBloomZone(candidate)) {
+                    pos = candidate
+                    break
+                }
+            }
         }
 
         val dnaCount = foods.count { it.kind == FoodKind.DNA_STRAND }
@@ -189,6 +194,7 @@ class GameSimulation(
             )
         }
         foods.add(food)
+        isFoodGridDirty = true
     }
 
     private fun spawnAiMicrobe() {
@@ -407,6 +413,10 @@ class GameSimulation(
         // Microbes AI (with LOD distance culling)
         updateMicrobes(deltaTime)
 
+        // Dyn4j Physics step & elastic appendage kinematics (flagella & cilia)
+        physicsEngine.stepSimulation(deltaTime)
+        updateAppendages(deltaTime)
+
         // High-performance spatial collisions
         handlePlayerFoodCollisions()
         handlePlayerMicrobeCollisions()
@@ -424,10 +434,13 @@ class GameSimulation(
     }
 
     private fun rebuildSpatialGrids() {
-        foodGrid.clear()
-        for (i in 0 until foods.size) {
-            val f = foods[i]
-            foodGrid.insert(f.position.x, f.position.y, f)
+        if (isFoodGridDirty) {
+            foodGrid.clear()
+            for (i in 0 until foods.size) {
+                val f = foods[i]
+                foodGrid.insert(f.position.x, f.position.y, f)
+            }
+            isFoodGridDirty = false
         }
 
         microbeGrid.clear()
@@ -633,32 +646,113 @@ class GameSimulation(
         }
     }
 
-    /**
-     * Anti-lag: Player-Food collision using Spatial Grid with toroidal wrapping.
-     */
-    private fun handlePlayerFoodCollisions() {
+    private fun updateAppendages(deltaTime: Float) {
         val playerRadius = calculatePlayerRadius()
-        val toRemove = mutableListOf<Long>()
+        val pFlagellaCount = evolutionEntity.flagellaCount.coerceIn(1, 4)
+        if (player.flagellaChains.size != pFlagellaCount) {
+            val list = mutableListOf<ElasticAppendageChain>()
+            for (i in 0 until pFlagellaCount) {
+                list.add(ElasticAppendageChain(segmentCount = 5, totalLength = playerRadius * (if (player.isDashing) 2.4f else 1.8f), baseRadius = (playerRadius * 0.16f).coerceAtLeast(3.5f)))
+            }
+            player.flagellaChains = list
+        }
 
-        foodGrid.forEachNeighbor(player.position.x, player.position.y) { food ->
-            val dist = player.position.wrappedDistanceTo(food.position, WORLD_WIDTH, WORLD_HEIGHT)
-            if (dist < playerRadius + food.radius) {
-                if (TrophicWebRules.canConsumeFood(playerStats.dietType, food.kind)) {
-                    toRemove.add(food.id)
-                    player.dnaPoints += food.valueDna
-                    player.biomass += food.valueBiomass
-                    player.health = min(player.maxHealth, player.health + food.valueBiomass * 1.5f)
-                    onDnaCollected(food.valueDna)
-                    addNotice(food.position, "+${food.valueDna} ADN", food.color)
-                    onHapticImpact()
+        val pOffsets = when (pFlagellaCount) {
+            1 -> floatArrayOf(0f)
+            2 -> floatArrayOf(-0.35f, 0.35f)
+            3 -> floatArrayOf(-0.55f, 0f, 0.55f)
+            else -> floatArrayOf(-0.7f, -0.25f, 0.25f, 0.7f)
+        }
+
+        val cosA = cos(player.angle)
+        val sinA = sin(player.angle)
+        for (i in 0 until player.flagellaChains.size) {
+            val chain = player.flagellaChains[i]
+            val yOffset = pOffsets[i]
+            val localX = -playerRadius * 0.88f
+            val localY = playerRadius * yOffset
+            val rootPos = Vector2(
+                player.position.x + cosA * localX - sinA * localY,
+                player.position.y + sinA * localX + cosA * localY
+            )
+            val wavePulse = sin(gameTimeSeconds * (if (player.isDashing) 16f else 8.5f) + i * 1.4f) * (if (player.isDashing) 0.5f else 0.3f)
+            chain.update(rootPos, player.angle, player.velocity, deltaTime, wavePulse)
+        }
+
+        // Player jaw release & soft body update
+        player.softBody.update(deltaTime)
+        if (player.jawAperture < 1.0f) player.jawAperture += deltaTime * 3.5f
+        if (player.mouthAnimationTimer <= 0f) player.isBiting = false
+
+        // Microbes appendages & soft body
+        for (m in microbes) {
+            m.softBody.update(deltaTime)
+            if (m.jawAperture < 1.0f) m.jawAperture += deltaTime * 3.5f
+            if (m.biteCooldown < 0.4f) m.isBiting = false
+
+            val count = m.flagellaCount
+            if (count > 0) {
+                if (m.flagellaChains.size != count) {
+                    val list = mutableListOf<ElasticAppendageChain>()
+                    for (i in 0 until count) {
+                        list.add(ElasticAppendageChain(segmentCount = 5, totalLength = m.radius * 1.7f, baseRadius = (m.radius * 0.15f).coerceAtLeast(3f)))
+                    }
+                    m.flagellaChains = list
+                }
+                val mOffsets = when (count) {
+                    1 -> floatArrayOf(0f)
+                    2 -> floatArrayOf(-0.35f, 0.35f)
+                    3 -> floatArrayOf(-0.55f, 0f, 0.55f)
+                    else -> floatArrayOf(-0.7f, -0.25f, 0.25f, 0.7f)
+                }
+                val mCos = cos(m.angle)
+                val mSin = sin(m.angle)
+                for (i in 0 until m.flagellaChains.size) {
+                    val chain = m.flagellaChains[i]
+                    val yOffset = mOffsets[i]
+                    val localX = -m.radius * 0.88f
+                    val localY = m.radius * yOffset
+                    val rootPos = Vector2(
+                        m.position.x + mCos * localX - mSin * localY,
+                        m.position.y + mSin * localX + mCos * localY
+                    )
+                    val wavePulse = sin(gameTimeSeconds * 8.5f + i * 1.4f) * 0.35f
+                    chain.update(rootPos, m.angle, m.velocity, deltaTime, wavePulse)
                 }
             }
         }
-
-        if (toRemove.isNotEmpty()) {
-            foods.removeAll { toRemove.contains(it.id) }
-        }
     }
+
+    /**
+     * Anti-lag: Player-Food collision using Spatial Grid with toroidal wrapping.
+     */
+     private fun handlePlayerFoodCollisions() {
+         val playerRadius = calculatePlayerRadius()
+         var collectedAny = false
+
+         foodGrid.forEachNeighbor(player.position.x, player.position.y) { food ->
+             if (!food.isCollected) {
+                 val dist = player.position.wrappedDistanceTo(food.position, WORLD_WIDTH, WORLD_HEIGHT)
+                 if (dist < playerRadius + food.radius) {
+                     if (TrophicWebRules.canConsumeFood(playerStats.dietType, food.kind)) {
+                         food.isCollected = true
+                         collectedAny = true
+                         player.dnaPoints += food.valueDna
+                         player.biomass += food.valueBiomass
+                         player.health = min(player.maxHealth, player.health + food.valueBiomass * 1.5f)
+                         onDnaCollected(food.valueDna)
+                         addNotice(food.position, "+${food.valueDna} ADN", food.color)
+                         onHapticImpact()
+                     }
+                 }
+             }
+         }
+
+         if (collectedAny) {
+             foods.removeAll { it.isCollected }
+             isFoodGridDirty = true
+         }
+     }
 
     /**
      * Anti-lag: Player-Microbe collision using Spatial Grid with toroidal wrapping.
@@ -671,20 +765,30 @@ class GameSimulation(
             val combinedRadius = playerRadius + m.radius
 
             if (dist < combinedRadius) {
-                onSpeciesDiscovered(m.speciesId)
+                if (discoveredSpecies.add(m.speciesId)) {
+                    onSpeciesDiscovered(m.speciesId)
+                }
 
-                // 1. Spikes Collision
+                // Soft-body membrane collision impulse
+                val toMicrobe = player.position.wrappedDeltaTo(m.position, WORLD_WIDTH, WORLD_HEIGHT)
+                val hitAngle = toMicrobe.angle() - player.angle
+                player.softBody.applyImpact(hitAngle, impulse = 12f)
+                m.softBody.applyImpact(hitAngle + PI.toFloat(), impulse = 12f)
+
+                // 1. Spikes Collision (Causes deep local elastic membrane indentation)
                 if (playerStats.spikeDamage > 0f) {
                     val hitDmg = playerStats.spikeDamage * 0.6f
                     m.health -= hitDmg
+                    m.softBody.applyImpact(hitAngle + PI.toFloat(), impulse = 24f)
                     addNotice(m.position, "¡PÚA! -${hitDmg.toInt()}", Color(0xFF00E5FF))
                 }
                 if (m.spikesCount > 0) {
                     val enemySpikeDmg = m.spikesCount * 18f
+                    player.softBody.applyImpact(hitAngle, impulse = 24f)
                     damagePlayer(enemySpikeDmg, "${m.name} (Púas)")
                 }
 
-                // 2. Predator & Prey interactions
+                // 2. Predator & Prey interactions with articulated physical jaws
                 val canPlayerEatMicrobe = TrophicWebRules.canPredatorAttack(playerStats.dietType, playerStats.trophicTier, playerRadius, m.trophicTier, m.radius)
                 val canMicrobeEatPlayer = TrophicWebRules.canPredatorAttack(m.diet, m.trophicTier, m.radius, playerStats.trophicTier, playerRadius)
 
@@ -692,18 +796,24 @@ class GameSimulation(
                     val biteDmg = playerStats.biteDamage * 1.5f
                     m.health -= biteDmg
                     player.mouthAnimationTimer = 0.35f
+                    player.isBiting = true
+                    player.jawAperture = 0.05f
+                    m.softBody.applyImpact(hitAngle + PI.toFloat(), impulse = 28f)
                     addNotice(m.position, "Mordisco! -${biteDmg.toInt()}", Color(0xFFFF5252))
                     onHapticImpact()
                 }
 
                 if (canMicrobeEatPlayer && m.biteCooldown <= 0f) {
                     m.biteCooldown = 0.8f
+                    m.isBiting = true
+                    m.jawAperture = 0.05f
                     val incomingDmg = when (m.trophicTier) {
                         TrophicTier.APEX -> 40f
                         TrophicTier.PREDATOR -> 24f
                         TrophicTier.SECONDARY_CONSUMER -> 14f
                         else -> 8f
                     }
+                    player.softBody.applyImpact(hitAngle, impulse = 28f)
                     damagePlayer(incomingDmg, m.name)
                 }
 
@@ -732,15 +842,26 @@ class GameSimulation(
                 if (a.id < b.id) {
                     val dist = a.position.wrappedDistanceTo(b.position, WORLD_WIDTH, WORLD_HEIGHT)
                     if (dist < a.radius + b.radius) {
+                        val toB = a.position.wrappedDeltaTo(b.position, WORLD_WIDTH, WORLD_HEIGHT)
+                        val angleA = toB.angle() - a.angle
+                        a.softBody.applyImpact(angleA, impulse = 10f)
+                        b.softBody.applyImpact(angleA + PI.toFloat(), impulse = 10f)
+
                         val aCanEatB = TrophicWebRules.canPredatorAttack(a.diet, a.trophicTier, a.radius, b.trophicTier, b.radius)
                         val bCanEatA = TrophicWebRules.canPredatorAttack(b.diet, b.trophicTier, b.radius, a.trophicTier, a.radius)
 
                         if (aCanEatB) {
                             b.health -= 25f
                             a.health = min(a.maxHealth, a.health + 10f)
+                            a.isBiting = true
+                            a.jawAperture = 0.05f
+                            b.softBody.applyImpact(angleA + PI.toFloat(), impulse = 22f)
                         } else if (bCanEatA) {
                             a.health -= 25f
                             b.health = min(b.maxHealth, b.health + 10f)
+                            b.isBiting = true
+                            b.jawAperture = 0.05f
+                            a.softBody.applyImpact(angleA, impulse = 22f)
                         }
                     }
                 }
@@ -784,6 +905,7 @@ class GameSimulation(
                 )
             )
         }
+        isFoodGridDirty = true
         addNotice(m.position, "¡${m.name} Devorado!", Color(0xFF00E5FF))
     }
 
@@ -905,6 +1027,8 @@ class GameSimulation(
         poisonPuddles.clear()
         electricBlasts.clear()
         rippleSystem.clear()
+        discoveredSpecies.clear()
+        isFoodGridDirty = true
         spawnInitialEcosystem()
     }
 }

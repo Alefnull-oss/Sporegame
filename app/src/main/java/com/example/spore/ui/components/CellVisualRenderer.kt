@@ -15,6 +15,9 @@ import androidx.compose.ui.graphics.drawscope.rotate
 import com.example.spore.game.engine.DietType
 import com.example.spore.game.engine.FoodKind
 import com.example.spore.game.engine.FoodParticle
+import com.example.spore.game.noise.FastNoiseLite
+import com.example.spore.game.physics.ElasticAppendageChain
+import com.example.spore.game.physics.SoftBodyMembrane
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
@@ -36,6 +39,26 @@ object CellVisualRenderer {
     private val reusablePath2 = Path()
     private val reusablePath3 = Path()
 
+    // Pre-allocated static arrays to eliminate per-frame List allocations
+    private val FLAGELLA_OFFSETS_1 = floatArrayOf(0f)
+    private val FLAGELLA_OFFSETS_2 = floatArrayOf(-0.35f, 0.35f)
+    private val FLAGELLA_OFFSETS_3 = floatArrayOf(-0.55f, 0f, 0.55f)
+    private val FLAGELLA_OFFSETS_4 = floatArrayOf(-0.7f, -0.25f, 0.25f, 0.7f)
+
+    private val SPIKE_ANGLES_1 = floatArrayOf(0f)
+    private val SPIKE_ANGLES_2 = floatArrayOf(-0.35f, 0.35f)
+    private val SPIKE_ANGLES_3 = floatArrayOf(-0.55f, 0f, 0.55f)
+    private val SPIKE_ANGLES_4 = floatArrayOf(-0.75f, -0.25f, 0.25f, 0.75f)
+
+    // Pre-allocated vertex buffers for soft-body organic membrane contour (zero allocation)
+    private val membranePoints = Array(16) { Offset.Zero }
+    private val shadowPoints = Array(16) { Offset.Zero }
+
+    private val organicMembraneNoise = FastNoiseLite(1337).apply {
+        noiseType = FastNoiseLite.NoiseType.OpenSimplex2
+        frequency = 0.08f
+    }
+
     fun drawCell(
         drawScope: DrawScope,
         center: Offset,
@@ -51,7 +74,11 @@ object CellVisualRenderer {
         eyeType: String = "BASIC",
         timeSeconds: Float,
         isDashing: Boolean = false,
-        damageFlash: Boolean = false
+        damageFlash: Boolean = false,
+        softBody: SoftBodyMembrane? = null,
+        flagellaChains: List<ElasticAppendageChain>? = null,
+        jawAperture: Float = 1.0f,
+        isBiting: Boolean = false
     ) {
         val angleDeg = Math.toDegrees(angleRad.toDouble()).toFloat()
 
@@ -61,9 +88,9 @@ object CellVisualRenderer {
                 drawClayCilia(this, center, radius, ciliaCount, timeSeconds, primaryColor)
             }
 
-            // 2. Segmented Clay Flagella (gummy bead-like tail)
+            // 2. Segmented Clay Flagella with dynamic water inertia and spring kinematics
             if (flagellaCount > 0) {
-                drawClayFlagella(this, center, radius, flagellaCount, timeSeconds, isDashing, primaryColor)
+                drawClayFlagella(this, center, radius, flagellaCount, timeSeconds, isDashing, primaryColor, flagellaChains)
             }
 
             // 3. Chunky Comic Spikes
@@ -71,8 +98,8 @@ object CellVisualRenderer {
                 drawClaySpikes(this, center, radius, spikesCount)
             }
 
-            // 4. Main Clay Body (Plastilinezco con relieve 3D, sombras y brillo)
-            drawClayBody(this, center, radius, primaryColor, damageFlash, timeSeconds, isDashing)
+            // 4. Main Clay Body - Organic soft-body membrane with FastNoiseLite and physical collision deformations
+            drawClayBody(this, center, radius, primaryColor, damageFlash, timeSeconds, isDashing, softBody)
 
             // 5. Organelles (Toxic slime vesicle / Electric spark node)
             if (hasPoison) {
@@ -87,8 +114,8 @@ object CellVisualRenderer {
                 drawCartoonEyes(this, center, radius, eyeType, timeSeconds, isDashing, damageFlash)
             }
 
-            // 7. Goofy Animated Cartoon Mouth
-            drawCartoonMouth(this, center, radius, mouthType, timeSeconds)
+            // 7. Goofy Animated Cartoon Mouth with articulated physical jaws
+            drawCartoonMouth(this, center, radius, mouthType, timeSeconds, jawAperture, isBiting)
         }
     }
 
@@ -99,7 +126,8 @@ object CellVisualRenderer {
         primaryColor: Color,
         damageFlash: Boolean,
         timeSeconds: Float,
-        isDashing: Boolean
+        isDashing: Boolean,
+        softBody: SoftBodyMembrane? = null
     ) {
         val baseColor = if (damageFlash) Color(0xFFFF2A4B) else primaryColor
         val darkRimColor = Color(
@@ -117,65 +145,93 @@ object CellVisualRenderer {
 
         // Subtle clay wobble / breathing animation
         val breathe = sin(timeSeconds * 4f) * (radius * 0.04f)
-        val r = radius + breathe
+        val rBase = radius + breathe
+
+        // Construct soft-body organic membrane contour with FastNoiseLite & softBody impulse deformations
+        val vertexCount = 16
+        val step = (2f * PI.toFloat()) / vertexCount
+        val shadowOffset = Offset(rBase * 0.08f, rBase * 0.12f)
+
+        for (i in 0 until vertexCount) {
+            val ang = i * step
+            // Organic biological oscillation from FastNoiseLite
+            val noiseVal = organicMembraneNoise.getNoise(cos(ang) * 2.5f, sin(ang) * 2.5f + timeSeconds * 1.6f)
+            val biologicalWobble = noiseVal * (radius * 0.065f)
+            val physicalDeform = softBody?.deformations?.getOrNull(i) ?: 0f
+
+            val r = (rBase + biologicalWobble + physicalDeform).coerceAtLeast(radius * 0.35f)
+            val px = center.x + cos(ang) * r
+            val py = center.y + sin(ang) * r
+            membranePoints[i] = Offset(px, py)
+            shadowPoints[i] = Offset(px + shadowOffset.x, py + shadowOffset.y)
+        }
+
+        // Build smooth closed spline path using midpoint quadratic curves
+        reusablePath1.reset()
+        val p0 = (membranePoints[0] + membranePoints[vertexCount - 1]) * 0.5f
+        reusablePath1.moveTo(p0.x, p0.y)
+        for (i in 0 until vertexCount) {
+            val pCurrent = membranePoints[i]
+            val pNext = membranePoints[(i + 1) % vertexCount]
+            val mid = (pCurrent + pNext) * 0.5f
+            reusablePath1.quadraticTo(pCurrent.x, pCurrent.y, mid.x, mid.y)
+        }
+        reusablePath1.close()
 
         // 1. Soft clay drop shadow (for tangible 3D plasticine feel)
-        drawScope.drawCircle(
-            color = Color.Black.copy(alpha = 0.35f),
-            radius = r * 0.98f,
-            center = center + Offset(r * 0.08f, r * 0.12f)
-        )
+        reusablePath3.reset()
+        val sp0 = (shadowPoints[0] + shadowPoints[vertexCount - 1]) * 0.5f
+        reusablePath3.moveTo(sp0.x, sp0.y)
+        for (i in 0 until vertexCount) {
+            val pCurrent = shadowPoints[i]
+            val pNext = shadowPoints[(i + 1) % vertexCount]
+            val mid = (pCurrent + pNext) * 0.5f
+            reusablePath3.quadraticTo(pCurrent.x, pCurrent.y, mid.x, mid.y)
+        }
+        reusablePath3.close()
+        drawScope.drawPath(reusablePath3, color = Color.Black.copy(alpha = 0.32f), style = Fill)
 
         // 2. Thick cartoon border (contour)
-        drawScope.drawCircle(
-            color = darkRimColor,
-            radius = r,
-            center = center
-        )
+        drawScope.drawPath(reusablePath1, color = darkRimColor, style = Stroke(width = 6f))
 
         // 3. Main plasticine mass with curved light gradient
+        drawScope.drawPath(reusablePath1, color = baseColor, style = Fill)
         drawScope.drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(
-                    lightClayColor,
-                    baseColor,
-                    darkRimColor
-                ),
-                center = center - Offset(r * 0.22f, r * 0.25f),
-                radius = r * 1.15f
-            ),
-            radius = r - 2.5f,
-            center = center
+            color = lightClayColor.copy(alpha = 0.65f),
+            radius = (rBase - 2.5f) * 0.72f,
+            center = center - Offset(rBase * 0.18f, rBase * 0.20f)
         )
 
-        // 4. Glossy Specular Clay Sheen (crescent highlight at top-left)
-        val highlightCenter = center - Offset(r * 0.32f, r * 0.35f)
+        // 4. Glossy Specular Clay Sheen
+        val highlightCenter = center - Offset(rBase * 0.32f, rBase * 0.35f)
         drawScope.drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(Color.White.copy(alpha = 0.65f), Color.White.copy(alpha = 0.15f), Color.Transparent),
-                center = highlightCenter,
-                radius = r * 0.38f
-            ),
-            radius = r * 0.38f,
+            color = Color.White.copy(alpha = 0.65f),
+            radius = rBase * 0.28f,
             center = highlightCenter
         )
+        drawScope.drawCircle(
+            color = Color.White.copy(alpha = 0.90f),
+            radius = rBase * 0.14f,
+            center = highlightCenter - Offset(rBase * 0.05f, rBase * 0.05f)
+        )
 
-        // 5. Nucleus: Cute bouncy core inside the gummy cell
-        val nucleusRadius = r * 0.32f
-        val nucleusCenter = center + Offset(-r * 0.08f, r * 0.05f)
+        // 5. Nucleus: Cute bouncy core inside the gummy cell (zero shader allocation)
+        val nucleusRadius = rBase * 0.32f
+        val nucleusCenter = center + Offset(-rBase * 0.08f, rBase * 0.05f)
         drawScope.drawCircle(
             color = darkRimColor.copy(alpha = 0.7f),
             radius = nucleusRadius + 1.5f,
             center = nucleusCenter
         )
         drawScope.drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(Color.White.copy(alpha = 0.85f), lightClayColor, baseColor),
-                center = nucleusCenter - Offset(nucleusRadius * 0.25f, nucleusRadius * 0.25f),
-                radius = nucleusRadius
-            ),
+            color = baseColor,
             radius = nucleusRadius,
             center = nucleusCenter
+        )
+        drawScope.drawCircle(
+            color = Color.White.copy(alpha = 0.75f),
+            radius = nucleusRadius * 0.45f,
+            center = nucleusCenter - Offset(nucleusRadius * 0.25f, nucleusRadius * 0.25f)
         )
     }
 
@@ -186,19 +242,9 @@ object CellVisualRenderer {
         count: Int,
         time: Float,
         isDashing: Boolean,
-        color: Color
+        color: Color,
+        chains: List<ElasticAppendageChain>? = null
     ) {
-        val waveFreq = if (isDashing) 16f else 8.5f
-        val waveAmp = radius * (if (isDashing) 0.45f else 0.3f)
-        val segments = 7
-
-        val offsets = when (count) {
-            1 -> listOf(0f)
-            2 -> listOf(-0.35f, 0.35f)
-            3 -> listOf(-0.55f, 0f, 0.55f)
-            else -> listOf(-0.7f, -0.25f, 0.25f, 0.7f)
-        }
-
         val clayBeadColor = color
         val beadOutline = Color(
             (color.red * 0.5f).coerceIn(0f, 1f),
@@ -207,7 +253,40 @@ object CellVisualRenderer {
             1f
         )
 
-        for ((tailIdx, yFactor) in offsets.withIndex()) {
+        // If physical kinematic chains are provided, render elastic chain segments with water inertia
+        if (chains != null && chains.isNotEmpty()) {
+            for (chain in chains) {
+                val segs = chain.segments
+                for (i in 0 until segs.size) {
+                    val seg = segs[i]
+                    val beadCenter = Offset(seg.position.x, seg.position.y)
+                    val r = seg.radius
+
+                    drawScope.drawCircle(color = beadOutline, radius = r + 1.5f, center = beadCenter)
+                    drawScope.drawCircle(color = clayBeadColor, radius = r, center = beadCenter)
+                    drawScope.drawCircle(
+                        color = Color.White.copy(alpha = 0.7f),
+                        radius = r * 0.35f,
+                        center = beadCenter - Offset(r * 0.3f, r * 0.3f)
+                    )
+                }
+            }
+            return
+        }
+
+        val waveFreq = if (isDashing) 16f else 8.5f
+        val waveAmp = radius * (if (isDashing) 0.45f else 0.3f)
+        val segments = 5
+
+        val offsets = when (count) {
+            1 -> FLAGELLA_OFFSETS_1
+            2 -> FLAGELLA_OFFSETS_2
+            3 -> FLAGELLA_OFFSETS_3
+            else -> FLAGELLA_OFFSETS_4
+        }
+
+        for (tailIdx in 0 until offsets.size) {
+            val yFactor = offsets[tailIdx]
             val startX = center.x - (radius * 0.88f)
             val startY = center.y + (radius * yFactor)
             val tailLen = radius * (if (isDashing) 2.4f else 1.75f)
@@ -250,7 +329,7 @@ object CellVisualRenderer {
         time: Float,
         color: Color
     ) {
-        val hairCount = 10 + (ciliaTier * 4)
+        val hairCount = 8 + (ciliaTier * 3)
         val hairLength = radius * 0.26f
 
         val ciliaColor = color
@@ -305,13 +384,14 @@ object CellVisualRenderer {
         spikesCount: Int
     ) {
         val spikeAngles = when (spikesCount) {
-            1 -> listOf(0f)
-            2 -> listOf(-0.35f, 0.35f)
-            3 -> listOf(-0.55f, 0f, 0.55f)
-            else -> listOf(-0.75f, -0.25f, 0.25f, 0.75f)
+            1 -> SPIKE_ANGLES_1
+            2 -> SPIKE_ANGLES_2
+            3 -> SPIKE_ANGLES_3
+            else -> SPIKE_ANGLES_4
         }
 
-        for (ang in spikeAngles) {
+        for (i in 0 until spikeAngles.size) {
+            val ang = spikeAngles[i]
             val spikeLength = radius * 1.55f
             val baseSpread = 0.22f
 
@@ -356,39 +436,49 @@ object CellVisualRenderer {
         val eye1Center = center + Offset(eyeForward, -eyeSpacing)
         val eye2Center = center + Offset(eyeForward, eyeSpacing)
 
-        for (eyePos in listOf(eye1Center, eye2Center)) {
-            // Dark clay rim / socket
-            drawScope.drawCircle(
-                color = Color(0xFF1A237E),
-                radius = eyeR + 2.5f,
-                center = eyePos
-            )
-            // Big white googly eyeball
-            drawScope.drawCircle(
-                color = Color(0xFFFAFAFA),
-                radius = eyeR,
-                center = eyePos
-            )
+        drawSingleCartoonEye(drawScope, eye1Center, eyeR, eyeType, isDashing, damageFlash)
+        drawSingleCartoonEye(drawScope, eye2Center, eyeR, eyeType, isDashing, damageFlash)
+    }
 
-            // Animated cartoon pupil: looks forward/slightly looks around
-            val pupilOffsetFactor = if (isDashing) 0.55f else 0.35f
-            val pupilShift = Offset(eyeR * pupilOffsetFactor, 0f)
-            val pupilRadius = if (damageFlash) eyeR * 0.75f else eyeR * 0.48f
+    private fun drawSingleCartoonEye(
+        drawScope: DrawScope,
+        eyePos: Offset,
+        eyeR: Float,
+        eyeType: String,
+        isDashing: Boolean,
+        damageFlash: Boolean
+    ) {
+        // Dark clay rim / socket
+        drawScope.drawCircle(
+            color = Color(0xFF1A237E),
+            radius = eyeR + 2.5f,
+            center = eyePos
+        )
+        // Big white googly eyeball
+        drawScope.drawCircle(
+            color = Color(0xFFFAFAFA),
+            radius = eyeR,
+            center = eyePos
+        )
 
-            val pupilColor = if (eyeType == "COMPOUND") Color(0xFFFF1744) else Color(0xFF102027)
-            drawScope.drawCircle(
-                color = pupilColor,
-                radius = pupilRadius,
-                center = eyePos + pupilShift
-            )
+        // Animated cartoon pupil: looks forward/slightly looks around
+        val pupilOffsetFactor = if (isDashing) 0.55f else 0.35f
+        val pupilShift = Offset(eyeR * pupilOffsetFactor, 0f)
+        val pupilRadius = if (damageFlash) eyeR * 0.75f else eyeR * 0.48f
 
-            // Cute cartoon specular highlight in the pupil!
-            drawScope.drawCircle(
-                color = Color.White,
-                radius = pupilRadius * 0.42f,
-                center = eyePos + pupilShift - Offset(pupilRadius * 0.3f, pupilRadius * 0.3f)
-            )
-        }
+        val pupilColor = if (eyeType == "COMPOUND") Color(0xFFFF1744) else Color(0xFF102027)
+        drawScope.drawCircle(
+            color = pupilColor,
+            radius = pupilRadius,
+            center = eyePos + pupilShift
+        )
+
+        // Cute cartoon specular highlight in the pupil!
+        drawScope.drawCircle(
+            color = Color.White,
+            radius = pupilRadius * 0.42f,
+            center = eyePos + pupilShift - Offset(pupilRadius * 0.3f, pupilRadius * 0.3f)
+        )
     }
 
     private fun drawCartoonMouth(
@@ -396,7 +486,9 @@ object CellVisualRenderer {
         center: Offset,
         radius: Float,
         mouthType: DietType,
-        time: Float
+        time: Float,
+        jawAperture: Float = 1.0f,
+        isBiting: Boolean = false
     ) {
         val mouthX = center.x + (radius * 0.92f)
         val mouthY = center.y
@@ -437,15 +529,16 @@ object CellVisualRenderer {
                 )
             }
             DietType.CARNIVORE -> {
-                // Goofy cartoon carnivore jaw with big white triangular teeth!
-                val jawW = radius * 0.45f
-                val jawH = radius * 0.48f
+                // Articulated physical carnivore jaws snapping shut or stalking open
+                val effectiveAperture = if (isBiting) 0.15f else jawAperture.coerceIn(0.2f, 1.3f)
+                val jawW = radius * 0.48f
+                val jawH = radius * (0.15f + 0.38f * effectiveAperture)
 
                 reusablePath2.reset()
                 reusablePath2.moveTo(mouthX, mouthY - jawH)
-                reusablePath2.lineTo(mouthX + jawW, mouthY - jawH * 0.4f)
-                reusablePath2.lineTo(mouthX + (jawW * 0.4f), mouthY)
-                reusablePath2.lineTo(mouthX + jawW, mouthY + jawH * 0.4f)
+                reusablePath2.lineTo(mouthX + jawW, mouthY - jawH * 0.35f)
+                reusablePath2.lineTo(mouthX + (jawW * 0.35f), mouthY)
+                reusablePath2.lineTo(mouthX + jawW, mouthY + jawH * 0.35f)
                 reusablePath2.lineTo(mouthX, mouthY + jawH)
 
                 // Dark jaw outline
@@ -461,11 +554,13 @@ object CellVisualRenderer {
                     style = Stroke(width = 4f, cap = androidx.compose.ui.graphics.StrokeCap.Round)
                 )
 
-                // Chunky white teeth cones
-                val t1 = Offset(mouthX + jawW * 0.85f, mouthY - jawH * 0.45f)
-                val t2 = Offset(mouthX + jawW * 0.85f, mouthY + jawH * 0.45f)
-                drawScope.drawCircle(color = Color.White, radius = radius * 0.12f, center = t1)
-                drawScope.drawCircle(color = Color.White, radius = radius * 0.12f, center = t2)
+                // Interlocking conical teeth
+                val toothOffset = jawH * 0.4f
+                val t1 = Offset(mouthX + jawW * 0.85f, mouthY - toothOffset)
+                val t2 = Offset(mouthX + jawW * 0.85f, mouthY + toothOffset)
+                val toothR = radius * (if (isBiting) 0.14f else 0.11f)
+                drawScope.drawCircle(color = Color.White, radius = toothR, center = t1)
+                drawScope.drawCircle(color = Color.White, radius = toothR, center = t2)
             }
             DietType.OMNIVORE -> {
                 // Bendy-straw party horn cartoon proboscis!
@@ -535,14 +630,22 @@ object CellVisualRenderer {
  */
 object FoodVisualRenderer {
 
-    fun drawFood(drawScope: DrawScope, food: FoodParticle, timeSeconds: Float) {
-        val center = Offset(food.position.x, food.position.y)
-        val r = food.radius
+    fun drawFood(
+        drawScope: DrawScope,
+        screenX: Float,
+        screenY: Float,
+        radius: Float,
+        kind: FoodKind,
+        foodId: Long,
+        timeSeconds: Float
+    ) {
+        val center = Offset(screenX, screenY)
+        val r = radius
 
-        when (food.kind) {
+        when (kind) {
             FoodKind.ALGAE -> {
-                // Cartoon Green Pea with Glossy Clay Shine
-                val wobble = sin(timeSeconds * 4f + food.id) * 0.8f
+                // Cartoon Green Pea with Glossy Clay Shine (zero shader allocation)
+                val wobble = sin(timeSeconds * 4f + foodId) * 0.8f
                 val effectiveR = r + wobble
 
                 // Dark outline
@@ -553,13 +656,15 @@ object FoodVisualRenderer {
                 )
                 // Bright lime-emerald clay body
                 drawScope.drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(Color(0xFF69F0AE), Color(0xFF00E676), Color(0xFF00C853)),
-                        center = center - Offset(effectiveR * 0.3f, effectiveR * 0.3f),
-                        radius = effectiveR * 1.1f
-                    ),
+                    color = Color(0xFF00E676),
                     radius = effectiveR,
                     center = center
+                )
+                // Inner light core
+                drawScope.drawCircle(
+                    color = Color(0xFF69F0AE),
+                    radius = effectiveR * 0.65f,
+                    center = center - Offset(effectiveR * 0.2f, effectiveR * 0.2f)
                 )
                 // White specular clay highlight
                 drawScope.drawCircle(
@@ -569,7 +674,7 @@ object FoodVisualRenderer {
                 )
             }
             FoodKind.MEAT_CHUNK -> {
-                // Cartoon Comic Meat / Ham with White Marbling
+                // Cartoon Comic Meat / Ham with White Marbling (zero shader allocation)
                 // Dark contour
                 drawScope.drawCircle(
                     color = Color(0xFF880E4F),
@@ -578,13 +683,14 @@ object FoodVisualRenderer {
                 )
                 // Coral-red clay body
                 drawScope.drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(Color(0xFFFF8A80), Color(0xFFFF5252), Color(0xFFD50000)),
-                        center = center - Offset(r * 0.25f, r * 0.25f),
-                        radius = r * 1.15f
-                    ),
+                    color = Color(0xFFFF5252),
                     radius = r,
                     center = center
+                )
+                drawScope.drawCircle(
+                    color = Color(0xFFFF8A80),
+                    radius = r * 0.60f,
+                    center = center - Offset(r * 0.15f, r * 0.15f)
                 )
                 // White comic fat marbling dot
                 drawScope.drawCircle(
@@ -594,8 +700,8 @@ object FoodVisualRenderer {
                 )
             }
             FoodKind.DNA_STRAND -> {
-                // Golden Gummy DNA Helix
-                val pulse = sin(timeSeconds * 6f + food.id) * 1.5f
+                // Golden Gummy DNA Helix (zero shader allocation)
+                val pulse = sin(timeSeconds * 6f + foodId) * 1.5f
                 val effectiveR = r + pulse
 
                 // Golden glow ring
@@ -612,13 +718,14 @@ object FoodVisualRenderer {
                 )
                 // Bright gold clay nucleus
                 drawScope.drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(Color.White, Color(0xFFFFEA00), Color(0xFFFFAB00)),
-                        center = center - Offset(effectiveR * 0.25f, effectiveR * 0.25f),
-                        radius = effectiveR
-                    ),
+                    color = Color(0xFFFFD600),
                     radius = effectiveR,
                     center = center
+                )
+                drawScope.drawCircle(
+                    color = Color(0xFFFFF59D),
+                    radius = effectiveR * 0.65f,
+                    center = center - Offset(effectiveR * 0.18f, effectiveR * 0.18f)
                 )
                 // Sparkle cross
                 drawScope.drawLine(

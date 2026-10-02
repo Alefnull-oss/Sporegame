@@ -3,6 +3,7 @@ package com.example.spore.game.terrain
 import androidx.compose.ui.graphics.Color
 import com.example.spore.data.model.PlanetDefinition
 import com.example.spore.game.engine.Vector2
+import com.example.spore.game.noise.FastNoiseLite
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
@@ -379,13 +380,14 @@ data class CoralStructure(
 )
 
 data class VentBubble(
-    var position: Vector2,
-    var velocity: Vector2,
-    var radius: Float,
-    var alpha: Float,
-    var life: Float,
-    var maxLife: Float,
-    var color: Color
+    var position: Vector2 = Vector2.ZERO,
+    var velocity: Vector2 = Vector2.ZERO,
+    var radius: Float = 2f,
+    var alpha: Float = 0.5f,
+    var life: Float = 0f,
+    var maxLife: Float = 1.5f,
+    var color: Color = Color.White,
+    var isActive: Boolean = false
 )
 
 /**
@@ -406,7 +408,10 @@ class OceanTerrainSystem(
     val kelpPlants = mutableListOf<KelpPlant>()
     val vents = mutableListOf<HydrothermalVent>()
     val corals = mutableListOf<CoralStructure>()
-    val ventBubbles = mutableListOf<VentBubble>()
+    companion object {
+        const val MAX_VENT_BUBBLES = 40
+    }
+    val ventBubbles = Array(MAX_VENT_BUBBLES) { VentBubble() }
 
     var timeSeconds: Float = 0f
         private set
@@ -427,6 +432,35 @@ class OceanTerrainSystem(
     var activeBiome: OceanBiomeType = OceanBiomeType.SUNLIT_SHALLOWS
         private set
 
+    // FastNoiseLite Procedural Generators for Bathymetry, Voronoi Trenches, Curl Gyres, and Nutrient Blooms
+    private val bathymetryNoise = FastNoiseLite(planet.id.hashCode()).apply {
+        noiseType = FastNoiseLite.NoiseType.OpenSimplex2
+        fractalType = FastNoiseLite.FractalType.FBm
+        octaves = 3
+        frequency = 0.0018f
+    }
+
+    private val cellularTrenchNoise = FastNoiseLite(planet.id.hashCode() + 101).apply {
+        noiseType = FastNoiseLite.NoiseType.Cellular
+        cellularDistanceFunction = FastNoiseLite.CellularDistanceFunction.EuclideanSq
+        cellularReturnType = FastNoiseLite.CellularReturnType.Distance2Sub
+        frequency = 0.0012f
+    }
+
+    private val currentCurlNoise = FastNoiseLite(planet.id.hashCode() + 777).apply {
+        noiseType = FastNoiseLite.NoiseType.OpenSimplex2
+        fractalType = FastNoiseLite.FractalType.FBm
+        octaves = 2
+        frequency = 0.0015f
+    }
+
+    private val nutrientBloomNoise = FastNoiseLite(planet.id.hashCode() + 555).apply {
+        noiseType = FastNoiseLite.NoiseType.Cellular
+        cellularDistanceFunction = FastNoiseLite.CellularDistanceFunction.Euclidean
+        cellularReturnType = FastNoiseLite.CellularReturnType.Distance
+        frequency = 0.0022f
+    }
+
     init {
         generateTerrainFeatures()
         // Initialize smoothed colors to target
@@ -438,6 +472,11 @@ class OceanTerrainSystem(
     fun updatePlanet(newPlanet: PlanetDefinition) {
         planet = newPlanet
         theme = PlanetOceanTheme.createForPlanet(newPlanet)
+        val seed = newPlanet.id.hashCode()
+        bathymetryNoise.seed = seed
+        cellularTrenchNoise.seed = seed + 101
+        currentCurlNoise.seed = seed + 777
+        nutrientBloomNoise.seed = seed + 555
         smoothedDeepColor = theme.getDeepColor(activeBiome)
         smoothedShallowColor = theme.getShallowColor(activeBiome)
         smoothedCausticColor = theme.causticColor
@@ -448,108 +487,114 @@ class OceanTerrainSystem(
         kelpPlants.clear()
         vents.clear()
         corals.clear()
-        ventBubbles.clear()
+        for (i in 0 until MAX_VENT_BUBBLES) {
+            ventBubbles[i].isActive = false
+        }
 
-        val random = Random(42)
-
-        // 1. Generate Kelp Forests (dense groves in kelp biome zones)
-        val kelpZoneCenters = listOf(
-            Vector2(worldSize * 0.2f, worldSize * 0.75f),
-            Vector2(worldSize * 0.7f, worldSize * 0.3f),
-            Vector2(worldSize * 0.85f, worldSize * 0.85f)
-        )
-
+        val random = Random(planet.id.hashCode() + 42)
         val frondColors = theme.kelpFrondColors
-        for (center in kelpZoneCenters) {
-            for (i in 0 until 24) {
-                val offset = Vector2(
-                    random.nextFloat() * 700f - 350f,
-                    random.nextFloat() * 700f - 350f
-                )
-                val pos = wrapVector(center + offset)
-                val frondColor = frondColors[random.nextInt(frondColors.size)]
-                kelpPlants.add(
-                    KelpPlant(
-                        anchor = pos,
-                        height = random.nextFloat() * 140f + 160f,
-                        segmentCount = 6,
-                        swayPhase = random.nextFloat() * 2f * PI.toFloat(),
-                        swayFrequency = random.nextFloat() * 0.6f + 0.8f,
-                        frondColor = frondColor.copy(alpha = 0.82f),
-                        stalkWidth = random.nextFloat() * 3f + 3f
-                    )
-                )
-            }
-        }
-
-        // 2. Generate Hydrothermal Vents in deep trench zones
-        val trenchZoneCenters = listOf(
-            Vector2(worldSize * 0.5f, worldSize * 0.5f),
-            Vector2(worldSize * 0.15f, worldSize * 0.25f),
-            Vector2(worldSize * 0.8f, worldSize * 0.65f)
-        )
-
         val ventGlows = theme.ventGlowColors
-        for (center in trenchZoneCenters) {
-            for (i in 0 until 5) {
-                val offset = Vector2(
-                    random.nextFloat() * 600f - 300f,
-                    random.nextFloat() * 600f - 300f
-                )
-                val pos = wrapVector(center + offset)
-                val glow = ventGlows[random.nextInt(ventGlows.size)]
-                vents.add(
-                    HydrothermalVent(
-                        position = pos,
-                        chimneyWidth = random.nextFloat() * 20f + 36f,
-                        chimneyHeight = random.nextFloat() * 30f + 45f,
-                        glowColor = glow
-                    )
-                )
-            }
-        }
-
-        // 3. Generate Coral Formations in reef zones
-        val reefZoneCenters = listOf(
-            Vector2(worldSize * 0.35f, worldSize * 0.2f),
-            Vector2(worldSize * 0.65f, worldSize * 0.8f),
-            Vector2(worldSize * 0.15f, worldSize * 0.85f)
-        )
-
         val coralGlows = theme.coralGlowColors
-        for (center in reefZoneCenters) {
-            for (i in 0 until 18) {
-                val offset = Vector2(
-                    random.nextFloat() * 650f - 325f,
-                    random.nextFloat() * 650f - 325f
+
+        // Procedural distribution across world using FastNoiseLite bathymetry and biomes
+        val gridSize = 24
+        val step = worldSize / gridSize
+        for (gx in 0 until gridSize) {
+            for (gy in 0 until gridSize) {
+                val samplePos = Vector2(
+                    (gx + random.nextFloat() * 0.8f + 0.1f) * step,
+                    (gy + random.nextFloat() * 0.8f + 0.1f) * step
                 )
-                val pos = wrapVector(center + offset)
-                val glow = coralGlows[random.nextInt(coralGlows.size)]
-                corals.add(
-                    CoralStructure(
-                        position = pos,
-                        radius = random.nextFloat() * 28f + 22f,
-                        branchCount = random.nextInt(4) + 4,
-                        glowColor = glow,
-                        secondaryColor = Color(planet.oceanRimColor).copy(alpha = 0.85f)
-                    )
-                )
+                val biome = getBiomeAt(samplePos)
+
+                when (biome) {
+                    OceanBiomeType.HADAL_TRENCH -> {
+                        if (vents.size < 18 && random.nextFloat() < 0.40f) {
+                            val glow = ventGlows[random.nextInt(ventGlows.size)]
+                            vents.add(
+                                HydrothermalVent(
+                                    position = samplePos,
+                                    chimneyWidth = random.nextFloat() * 18f + 36f,
+                                    chimneyHeight = random.nextFloat() * 25f + 45f,
+                                    glowColor = glow
+                                )
+                            )
+                        }
+                    }
+                    OceanBiomeType.CORAL_REEF -> {
+                        if (corals.size < 45 && random.nextFloat() < 0.65f) {
+                            val glow = coralGlows[random.nextInt(coralGlows.size)]
+                            corals.add(
+                                CoralStructure(
+                                    position = samplePos,
+                                    radius = random.nextFloat() * 26f + 22f,
+                                    branchCount = random.nextInt(4) + 4,
+                                    glowColor = glow,
+                                    secondaryColor = Color(planet.oceanRimColor).copy(alpha = 0.85f)
+                                )
+                            )
+                        }
+                    }
+                    OceanBiomeType.KELP_FOREST -> {
+                        if (kelpPlants.size < 70 && random.nextFloat() < 0.75f) {
+                            val frondColor = frondColors[random.nextInt(frondColors.size)]
+                            kelpPlants.add(
+                                KelpPlant(
+                                    anchor = samplePos,
+                                    height = random.nextFloat() * 130f + 150f,
+                                    segmentCount = 6,
+                                    swayPhase = random.nextFloat() * 2f * PI.toFloat(),
+                                    swayFrequency = random.nextFloat() * 0.6f + 0.8f,
+                                    frondColor = frondColor.copy(alpha = 0.82f),
+                                    stalkWidth = random.nextFloat() * 3f + 3f
+                                )
+                            )
+                        }
+                    }
+                    else -> {}
+                }
             }
         }
     }
 
     /**
-     * Calculates the raw normalized harmonic depth factor (0.0 to 1.0) on a seamless 2D torus.
+     * Seamless toroidal 2D noise projection to ensure 100% boundary-free continuity.
+     */
+    private fun getToroidalNoise(noise: FastNoiseLite, pos: Vector2): Float {
+        val wx = (pos.x % worldSize + worldSize) % worldSize
+        val wy = (pos.y % worldSize + worldSize) % worldSize
+        val u = wx / worldSize
+        val v = wy / worldSize
+        val r = worldSize * 0.15f
+        val pi2 = 2f * PI.toFloat()
+        val nx1 = cos(u * pi2) * r
+        val ny1 = sin(u * pi2) * r
+        val nx2 = cos(v * pi2) * r
+        val ny2 = sin(v * pi2) * r
+        return (noise.getNoise(nx1 + nx2, ny1 - ny2) + noise.getNoise(nx1 - nx2, ny1 + ny2)) * 0.5f
+    }
+
+    /**
+     * Calculates the raw normalized bathymetric depth factor (0.0 to 1.0) using FastNoiseLite
+     * combining multi-octave Simplex bathymetry with Voronoi fault line trenches.
      */
     fun getDepthFactor(pos: Vector2): Float {
-        val nx = (pos.x / worldSize) * 2f * PI.toFloat()
-        val ny = (pos.y / worldSize) * 2f * PI.toFloat()
+        // Multi-octave Simplex terrain
+        val simplexDepth = (getToroidalNoise(bathymetryNoise, pos) + 1.0f) * 0.5f
+        // Cellular Voronoi trench fissures (Hadal trenches along cell boundaries)
+        val voronoiTrench = (getToroidalNoise(cellularTrenchNoise, pos) + 1.0f) * 0.5f
 
-        // Continuous harmonic depth noise on a 2D torus (seamless wrap)
-        val n1 = sin(nx) * cos(ny)
-        val n2 = sin(nx * 2f + 0.8f) * sin(ny * 2f) * 0.5f
-        val n3 = cos(nx * 3f + ny * 2f) * 0.25f
-        return ((n1 + n2 + n3 + 1.75f) / 3.5f).coerceIn(0f, 1f)
+        // Deepen into abyss where voronoi fault line occurs
+        val combined = simplexDepth * 0.7f + voronoiTrench * 0.3f
+        return combined.coerceIn(0f, 1f)
+    }
+
+    /**
+     * Determines whether a location is inside a rich plankton bloom zone using Cellular noise.
+     */
+    fun isNutrientBloomZone(pos: Vector2): Boolean {
+        val n = (getToroidalNoise(nutrientBloomNoise, pos) + 1.0f) * 0.5f
+        return n > 0.68f
     }
 
     /**
@@ -571,19 +616,30 @@ class OceanTerrainSystem(
     }
 
     /**
-     * Oceanic current flow vector at any location.
-     * Generates swirling gyres and jet streams seamlessly wrapped.
+     * Oceanic current flow vector at any location powered by FastNoiseLite Curl Noise.
+     * Divergence-free fluid flow field generates authentic spiral gyres, eddies and jet streams.
      */
     fun getCurrentVelocityAt(pos: Vector2): Vector2 {
-        val nx = (pos.x / worldSize) * 2f * PI.toFloat()
-        val ny = (pos.y / worldSize) * 2f * PI.toFloat()
-
+        val delta = 30f
         val biome = getBiomeAt(pos)
-        val speedBase = 18f * biome.currentSpeedMultiplier
+        val speedBase = 20f * biome.currentSpeedMultiplier
 
-        // Oceanic gyre stream vector field
-        val vx = (-sin(ny) + cos(nx * 2f) * 0.35f) * speedBase
-        val vy = (cos(nx) + sin(ny * 2f) * 0.35f) * speedBase
+        // Incompressible 2D Curl Noise: v = (dPsi/dy, -dPsi/dx)
+        val psiY1 = getToroidalNoise(currentCurlNoise, Vector2(pos.x, pos.y + delta))
+        val psiY0 = getToroidalNoise(currentCurlNoise, Vector2(pos.x, pos.y - delta))
+        val psiX1 = getToroidalNoise(currentCurlNoise, Vector2(pos.x + delta, pos.y))
+        val psiX0 = getToroidalNoise(currentCurlNoise, Vector2(pos.x - delta, pos.y))
+
+        val dPsiDy = (psiY1 - psiY0) / (2f * delta)
+        val dPsiDx = (psiX1 - psiX0) / (2f * delta)
+
+        var vx = dPsiDy * speedBase * 160f
+        var vy = -dPsiDx * speedBase * 160f
+
+        // Pelagic Jet biome adds strong laminar jet stream
+        if (biome == OceanBiomeType.PELAGIC_JET) {
+            vx += 16f * biome.currentSpeedMultiplier
+        }
 
         return Vector2(vx, vy)
     }
@@ -631,42 +687,51 @@ class OceanTerrainSystem(
             smoothedCausticColor = PlanetOceanTheme.lerpColor(smoothedCausticColor, theme.causticColor, blendSpeed)
         }
 
-        // 2. Update hydrothermal vent bubble plumes
-        for (vent in vents) {
-            vent.bubbleTimer += dt
-            if (vent.bubbleTimer >= 0.12f) {
-                vent.bubbleTimer = 0f
-                if (ventBubbles.size < 90) {
-                    val angle = -PI.toFloat() / 2f + (Random.nextFloat() * 0.5f - 0.25f)
-                    val speed = Random.nextFloat() * 80f + 60f
-                    val bubblePos = vent.position + Vector2(Random.nextFloat() * 16f - 8f, -vent.chimneyHeight * 0.8f)
-                    ventBubbles.add(
-                        VentBubble(
-                            position = bubblePos,
-                            velocity = Vector2.fromAngle(angle, speed),
-                            radius = Random.nextFloat() * 3f + 1.5f,
-                            alpha = Random.nextFloat() * 0.4f + 0.5f,
-                            life = 0f,
-                            maxLife = Random.nextFloat() * 1.5f + 1.2f,
-                            color = vent.glowColor.copy(alpha = 0.85f)
-                        )
-                    )
+        // 2. Update hydrothermal vent bubble plumes for nearby vents only
+        if (playerPosition != null) {
+            for (vent in vents) {
+                val dist = vent.position.wrappedDistanceTo(playerPosition, worldSize, worldSize)
+                if (dist > 1300f) continue
+
+                vent.bubbleTimer += dt
+                if (vent.bubbleTimer >= 0.15f) {
+                    vent.bubbleTimer = 0f
+                    val b = obtainVentBubble()
+                    if (b != null) {
+                        val angle = -PI.toFloat() / 2f + (Random.nextFloat() * 0.5f - 0.25f)
+                        val speed = Random.nextFloat() * 80f + 60f
+                        b.position = vent.position + Vector2(Random.nextFloat() * 16f - 8f, -vent.chimneyHeight * 0.8f)
+                        b.velocity = Vector2.fromAngle(angle, speed)
+                        b.radius = Random.nextFloat() * 3f + 1.5f
+                        b.alpha = Random.nextFloat() * 0.4f + 0.5f
+                        b.life = 0f
+                        b.maxLife = Random.nextFloat() * 1.5f + 1.2f
+                        b.color = vent.glowColor.copy(alpha = 0.85f)
+                        b.isActive = true
+                    }
                 }
             }
         }
 
-        // 3. Update vent bubbles
-        val iter = ventBubbles.iterator()
-        while (iter.hasNext()) {
-            val b = iter.next()
+        // 3. Update vent bubbles with zero iterator allocation
+        for (i in 0 until MAX_VENT_BUBBLES) {
+            val b = ventBubbles[i]
+            if (!b.isActive) continue
             b.life += dt
             b.position = b.position + (b.velocity * dt)
             b.velocity = b.velocity * 0.98f + Vector2(0f, -8f * dt) // buoyancy
             b.alpha = ((1f - b.life / b.maxLife) * 0.7f).coerceIn(0f, 1f)
             if (b.life >= b.maxLife) {
-                iter.remove()
+                b.isActive = false
             }
         }
+    }
+
+    private fun obtainVentBubble(): VentBubble? {
+        for (i in 0 until MAX_VENT_BUBBLES) {
+            if (!ventBubbles[i].isActive) return ventBubbles[i]
+        }
+        return null
     }
 
     fun wrapVector(v: Vector2): Vector2 {

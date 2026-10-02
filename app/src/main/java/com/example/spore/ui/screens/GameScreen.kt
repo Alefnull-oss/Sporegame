@@ -49,6 +49,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -103,28 +104,22 @@ fun GameScreen(
     var isPaused by remember { mutableStateOf(false) }
 
     // Anti-lag smooth frame loop with capped delta time
-    var lastNanoTime by remember { mutableFloatStateOf(0f) }
+    var frameTick by remember { mutableLongStateOf(0L) }
+    var lastNanoTime = 0L
     LaunchedEffect(isPaused) {
         while (!isPaused) {
             withFrameNanos { nowNanos ->
-                if (lastNanoTime == 0f) {
-                    lastNanoTime = nowNanos.toFloat()
+                if (lastNanoTime == 0L) {
+                    lastNanoTime = nowNanos
                 } else {
                     val dt = ((nowNanos - lastNanoTime) / 1_000_000_000f).coerceIn(0.005f, 0.033f)
-                    lastNanoTime = nowNanos.toFloat()
+                    lastNanoTime = nowNanos
                     simulation.update(dt, inputDirection)
+                    frameTick = nowNanos
                 }
             }
         }
     }
-
-    val pulseAnim = rememberInfiniteTransition(label = "pulse")
-    val pulseAlpha by pulseAnim.animateFloat(
-        initialValue = 0.65f,
-        targetValue = 1.0f,
-        animationSpec = infiniteRepeatable(tween(700), RepeatMode.Reverse),
-        label = "pulseAlpha"
-    )
 
     BoxWithConstraints(
         modifier = modifier
@@ -177,27 +172,15 @@ fun GameScreen(
                     )
                 }
         ) {
+            @Suppress("UNUSED_VARIABLE")
+            val tick = frameTick // Bind to Canvas draw phase for 60fps rendering without recomposing the UI tree
+
             val playerWorldPos = simulation.player.position
             val camX = screenCenter.x - (playerWorldPos.x * zoom)
             val camY = screenCenter.y - (playerWorldPos.y * zoom)
             val currentBiome = simulation.oceanTerrain.activeBiome
 
-            // Extract active ripples for GPU Shader
-            val activeRipples = mutableListOf<FloatArray>()
-            for (i in 0 until WaterRippleSystem.MAX_RIPPLES) {
-                val r = simulation.rippleSystem.ripplePool[i]
-                if (r.isActive && activeRipples.size < 4) {
-                    activeRipples.add(floatArrayOf(r.position.x, r.position.y, r.currentRadius, r.amplitude))
-                }
-            }
-            val playerRippleData = floatArrayOf(
-                playerWorldPos.x,
-                playerWorldPos.y,
-                playerRadius * 1.5f,
-                if (simulation.player.velocity.length() > 20f || simulation.player.isDashing) 0.85f else 0.25f
-            )
-
-            // 0. High-Performance GPU AGSL Surface Shader (API 33+) or Skia GPU fallback (Zero-Flicker)
+            // 0. High-Performance GPU AGSL Surface Shader (API 33+) or Skia GPU fallback (Zero-Allocation)
             gpuOceanShader.renderOceanSurface(
                 drawScope = this,
                 screenWidth = screenWidth,
@@ -209,8 +192,11 @@ fun GameScreen(
                 deepColor = simulation.oceanTerrain.smoothedDeepColor,
                 shallowColor = simulation.oceanTerrain.smoothedShallowColor,
                 causticColor = simulation.oceanTerrain.smoothedCausticColor,
-                playerRipple = playerRippleData,
-                ripples = activeRipples
+                playerX = playerWorldPos.x,
+                playerY = playerWorldPos.y,
+                playerRadius = playerRadius * 1.5f,
+                playerAmp = if (simulation.player.velocity.length() > 20f || simulation.player.isDashing) 0.85f else 0.25f,
+                rippleSystem = simulation.rippleSystem
             )
 
             // Anti-Lag Frustum Culling Box in World Coordinates
@@ -267,7 +253,7 @@ fun GameScreen(
                 }
             }
 
-            // 4. Poison Puddles (Wrapped)
+            // 4. Poison Puddles (Wrapped - Zero shader allocation)
             for (poison in simulation.poisonPuddles) {
                 val delta = playerWorldPos.wrappedDeltaTo(poison.position, GameSimulation.WORLD_WIDTH, GameSimulation.WORLD_HEIGHT)
                 val screenX = screenCenter.x + delta.x * zoom
@@ -276,16 +262,13 @@ fun GameScreen(
                 if (screenX in -r..(screenWidth + r) && screenY in -r..(screenHeight + r)) {
                     val screenPos = Offset(screenX, screenY)
                     drawCircle(
-                        brush = Brush.radialGradient(
-                            colors = listOf(
-                                Color(0xFF76FF03).copy(alpha = 0.55f),
-                                Color(0xFF33691E).copy(alpha = 0.25f),
-                                Color.Transparent
-                            ),
-                            center = screenPos,
-                            radius = r
-                        ),
+                        color = Color(0xFF33691E).copy(alpha = 0.25f),
                         radius = r,
+                        center = screenPos
+                    )
+                    drawCircle(
+                        color = Color(0xFF76FF03).copy(alpha = 0.55f),
+                        radius = r * 0.65f,
                         center = screenPos
                     )
                 }
@@ -307,18 +290,24 @@ fun GameScreen(
                 }
             }
 
-            // 6. Food & Nutrients (Wrapped to player view)
-            for (food in simulation.foods) {
+            // 6. Food & Nutrients (Wrapped to player view - Zero object copy)
+            val foods = simulation.foods
+            for (i in 0 until foods.size) {
+                val food = foods[i]
                 val delta = playerWorldPos.wrappedDeltaTo(food.position, GameSimulation.WORLD_WIDTH, GameSimulation.WORLD_HEIGHT)
                 val screenX = screenCenter.x + delta.x * zoom
                 val screenY = screenCenter.y + delta.y * zoom
                 val r = food.radius * zoom
                 if (screenX in -r - 20f..(screenWidth + r + 20f) && screenY in -r - 20f..(screenHeight + r + 20f)) {
-                    val transformedFood = food.copy(
-                        position = Vector2(screenX, screenY),
-                        radius = r
+                    FoodVisualRenderer.drawFood(
+                        drawScope = this,
+                        screenX = screenX,
+                        screenY = screenY,
+                        radius = r,
+                        kind = food.kind,
+                        foodId = food.id,
+                        timeSeconds = simulation.gameTimeSeconds
                     )
-                    FoodVisualRenderer.drawFood(this, transformedFood, simulation.gameTimeSeconds)
                 }
             }
 
@@ -347,7 +336,11 @@ fun GameScreen(
                         hasPoison = m.hasPoison,
                         hasElectric = false,
                         eyeType = if (m.trophicTier.level >= 3) "COMPOUND" else "BASIC",
-                        timeSeconds = simulation.gameTimeSeconds
+                        timeSeconds = simulation.gameTimeSeconds,
+                        softBody = m.softBody,
+                        flagellaChains = m.flagellaChains,
+                        jawAperture = m.jawAperture,
+                        isBiting = m.isBiting
                     )
 
                     // Cartoon Health Bar above microbe
@@ -393,7 +386,11 @@ fun GameScreen(
                 eyeType = cellConfig?.eyeType ?: "BASIC",
                 timeSeconds = simulation.gameTimeSeconds,
                 isDashing = simulation.player.isDashing,
-                damageFlash = simulation.player.damageFlashTimer > 0f
+                damageFlash = simulation.player.damageFlashTimer > 0f,
+                softBody = simulation.player.softBody,
+                flagellaChains = simulation.player.flagellaChains,
+                jawAperture = simulation.player.jawAperture,
+                isBiting = simulation.player.isBiting
             )
 
             // 9. Sensory Radar / Peripheral Threat Warning (Wrapped delta)
@@ -482,7 +479,6 @@ fun GameScreen(
         GameTopHud(
             simulation = simulation,
             planet = planet,
-            pulseAlpha = pulseAlpha,
             onOpenGalaxy = {
                 isPaused = true
                 viewModel.navigateTo(AppScreen.GALAXY_MAP)
@@ -584,7 +580,6 @@ fun GameScreen(
 private fun GameTopHud(
     simulation: GameSimulation,
     planet: PlanetDefinition,
-    pulseAlpha: Float,
     onOpenGalaxy: () -> Unit,
     onOpenEditor: () -> Unit,
     onOpenTrophicWeb: () -> Unit,
@@ -692,32 +687,12 @@ private fun GameTopHud(
                         )
                     }
 
-                    // Evolution Lab Button
+                    // Evolution Lab Button (Isolated pulse recomposition)
                     val readyToEvolve = simulation.player.dnaPoints >= 20
-                    Button(
-                        onClick = onOpenEditor,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = if (readyToEvolve) Color(0xFF00E5FF).copy(alpha = pulseAlpha) else Color(0xFF1E3A5F)
-                        ),
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier
-                            .height(34.dp)
-                            .testTag("open_editor_hud")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Science,
-                            contentDescription = "Laboratorio",
-                            tint = Color.Black,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = "Mutar",
-                            color = Color.Black,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 12.sp
-                        )
-                    }
+                    EvolveLabButton(
+                        readyToEvolve = readyToEvolve,
+                        onOpenEditor = onOpenEditor
+                    )
                 }
             }
 
@@ -831,6 +806,48 @@ private fun GameTopHud(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun EvolveLabButton(
+    readyToEvolve: Boolean,
+    onOpenEditor: () -> Unit
+) {
+    val alpha = if (readyToEvolve) {
+        val pulseAnim = rememberInfiniteTransition(label = "pulse")
+        val pulseAlpha by pulseAnim.animateFloat(
+            initialValue = 0.65f,
+            targetValue = 1.0f,
+            animationSpec = infiniteRepeatable(tween(700), RepeatMode.Reverse),
+            label = "pulseAlpha"
+        )
+        pulseAlpha
+    } else 1.0f
+
+    Button(
+        onClick = onOpenEditor,
+        colors = ButtonDefaults.buttonColors(
+            containerColor = if (readyToEvolve) Color(0xFF00E5FF).copy(alpha = alpha) else Color(0xFF1E3A5F)
+        ),
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier
+            .height(34.dp)
+            .testTag("open_editor_hud")
+    ) {
+        Icon(
+            imageVector = Icons.Default.Science,
+            contentDescription = "Laboratorio",
+            tint = Color.Black,
+            modifier = Modifier.size(16.dp)
+        )
+        Spacer(modifier = Modifier.width(4.dp))
+        Text(
+            text = "Mutar",
+            color = Color.Black,
+            fontWeight = FontWeight.Bold,
+            fontSize = 12.sp
+        )
     }
 }
 

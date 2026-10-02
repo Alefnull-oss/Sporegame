@@ -1,6 +1,8 @@
 package com.example.spore.game.engine
 
 import androidx.compose.ui.graphics.Color
+import com.example.spore.game.physics.ElasticAppendageChain
+import com.example.spore.game.physics.SoftBodyMembrane
 
 data class FoodParticle(
     val id: Long,
@@ -12,7 +14,8 @@ data class FoodParticle(
     val valueBiomass: Float,
     val color: Color,
     var rotation: Float = 0f,
-    var wobblePhase: Float = 0f
+    var wobblePhase: Float = 0f,
+    var isCollected: Boolean = false
 )
 
 data class PoisonPuddle(
@@ -83,7 +86,11 @@ data class AiMicrobe(
     var stateTimer: Float = 0f,
     var poisonCooldown: Float = 0f,
     var biteCooldown: Float = 0f,
-    var wobbleTime: Float = 0f
+    var wobbleTime: Float = 0f,
+    val softBody: SoftBodyMembrane = SoftBodyMembrane(16),
+    var flagellaChains: List<ElasticAppendageChain> = emptyList(),
+    var jawAperture: Float = 1.0f,
+    var isBiting: Boolean = false
 )
 
 data class PlayerCell(
@@ -103,5 +110,9 @@ data class PlayerCell(
     var invulnerableTimer: Float = 0f,
     var damageFlashTimer: Float = 0f,
     var mouthAnimationTimer: Float = 0f,
-    var wobbleTimer: Float = 0f
+    var wobbleTimer: Float = 0f,
+    val softBody: SoftBodyMembrane = SoftBodyMembrane(16),
+    var flagellaChains: List<ElasticAppendageChain> = emptyList(),
+    var jawAperture: Float = 1.0f,
+    var isBiting: Boolean = false
 )

@@ -15,11 +15,14 @@ class SpatialGrid<T>(
     val rows = (worldHeight / cellSize).toInt() + 1
 
     val grid: Array<ArrayList<T>> = Array(cols * rows) { ArrayList(16) }
+    private val activeCells = IntArray(cols * rows)
+    private var activeCount = 0
 
     fun clear() {
-        for (i in grid.indices) {
-            grid[i].clear()
+        for (i in 0 until activeCount) {
+            grid[activeCells[i]].clear()
         }
+        activeCount = 0
     }
 
     fun getCellIndex(x: Float, y: Float): Int {
@@ -32,7 +35,11 @@ class SpatialGrid<T>(
 
     fun insert(x: Float, y: Float, item: T) {
         val idx = getCellIndex(x, y)
-        grid[idx].add(item)
+        val cell = grid[idx]
+        if (cell.isEmpty()) {
+            activeCells[activeCount++] = idx
+        }
+        cell.add(item)
     }
 
     /**

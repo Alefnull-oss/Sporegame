@@ -78,7 +78,9 @@ object OceanVisualRenderer {
         }
 
         // 4. Draw Vent Bubbles
-        for (bubble in terrain.ventBubbles) {
+        for (i in 0 until OceanTerrainSystem.MAX_VENT_BUBBLES) {
+            val bubble = terrain.ventBubbles[i]
+            if (!bubble.isActive) continue
             val bx = bubble.position.x
             val by = bubble.position.y
             if (isInView(bx, by, viewLeft, viewRight, viewTop, viewBottom)) {
@@ -394,17 +396,19 @@ object OceanVisualRenderer {
         val w = vent.chimneyWidth * zoom
         val h = vent.chimneyHeight * zoom
 
-        // Vent chimney body (basalt rock)
+        // Vent chimney body (basalt rock) - zero-allocation solid stone
         val chimneyLeft = screenPos.x - w / 2f
         val chimneyTop = screenPos.y - h
         drawScope.drawRect(
-            brush = Brush.verticalGradient(
-                colors = listOf(Color(0xFF1A1A1A), Color(0xFF0D0D0D)),
-                startY = chimneyTop,
-                endY = screenPos.y
-            ),
+            color = Color(0xFF141414),
             topLeft = Offset(chimneyLeft, chimneyTop),
             size = Size(w, h)
+        )
+        // Vent side shadow
+        drawScope.drawRect(
+            color = Color(0xFF080808),
+            topLeft = Offset(chimneyLeft + w * 0.5f, chimneyTop),
+            size = Size(w * 0.5f, h)
         )
 
         // Mineral crystal rims
@@ -414,20 +418,24 @@ object OceanVisualRenderer {
             size = Size(w + 4f * zoom, 6f * zoom)
         )
 
-        // Glowing thermal mouth
+        // Glowing thermal mouth (layered alpha circles - zero shader allocation)
         val pulse = (sin(timeSeconds * 4f) * 0.15f + 0.85f)
+        val mouthPos = Offset(screenPos.x, chimneyTop)
+        val glowRadius = (w * 1.1f).coerceAtLeast(10f)
         drawScope.drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(
-                    vent.glowColor.copy(alpha = 0.85f * pulse),
-                    vent.glowColor.copy(alpha = 0.35f * pulse),
-                    Color.Transparent
-                ),
-                center = Offset(screenPos.x, chimneyTop),
-                radius = (w * 1.2f).coerceAtLeast(10f)
-            ),
-            radius = w * 1.2f,
-            center = Offset(screenPos.x, chimneyTop)
+            color = vent.glowColor.copy(alpha = 0.22f * pulse),
+            radius = glowRadius,
+            center = mouthPos
+        )
+        drawScope.drawCircle(
+            color = vent.glowColor.copy(alpha = 0.65f * pulse),
+            radius = glowRadius * 0.55f,
+            center = mouthPos
+        )
+        drawScope.drawCircle(
+            color = Color.White.copy(alpha = 0.90f * pulse),
+            radius = glowRadius * 0.22f,
+            center = mouthPos
         )
     }
 

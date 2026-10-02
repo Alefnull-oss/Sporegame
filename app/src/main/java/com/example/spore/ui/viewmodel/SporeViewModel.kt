@@ -114,6 +114,7 @@ class SporeViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun navigateTo(screen: AppScreen) {
+        flushPendingDna()
         if (screen == AppScreen.CELL_EDITOR) {
             cellEvolution.value?.let { _editorDraft.value = it }
         } else if (screen == AppScreen.GAME) {
@@ -122,24 +123,27 @@ class SporeViewModel(application: Application) : AndroidViewModel(application) {
         _currentScreen.value = screen
     }
 
+    private var pendingDnaEarnings = 0
+    private var lastDnaSaveTime = 0L
+    private var lastHapticTime = 0L
+    private val discoveredSpeciesCache = HashSet<String>()
+
     private fun initSimulation(evolution: CellEvolutionEntity, planet: PlanetDefinition) {
         gameSimulation = GameSimulation(
             initialEvolution = evolution,
             planetDefinition = planet,
             onDnaCollected = { amount ->
-                viewModelScope.launch {
-                    val pId = _selectedPlanet.value.id
-                    val pSave = repository.getPlanetSaveSync(pId)
-                    if (pSave != null) {
-                        repository.savePlanetSave(pSave.copy(dnaPoints = pSave.dnaPoints + amount))
-                    }
-                    val current = repository.getCellEvolutionSync()
-                    repository.saveCellEvolution(current.copy(dnaPoints = current.dnaPoints + amount))
+                pendingDnaEarnings += amount
+                val now = System.currentTimeMillis()
+                if (now - lastDnaSaveTime > 2500L) {
+                    flushPendingDna()
                 }
             },
             onSpeciesDiscovered = { speciesId ->
-                viewModelScope.launch {
-                    repository.markSpeciesDiscovered(speciesId)
+                if (discoveredSpeciesCache.add(speciesId)) {
+                    viewModelScope.launch {
+                        repository.markSpeciesDiscovered(speciesId)
+                    }
                 }
             },
             onSpeciesEaten = { speciesId ->
@@ -148,6 +152,7 @@ class SporeViewModel(application: Application) : AndroidViewModel(application) {
                 }
             },
             onPlayerKilled = { speciesId ->
+                flushPendingDna()
                 viewModelScope.launch {
                     repository.recordKilledBy(speciesId)
                     val sim = gameSimulation ?: return@launch
@@ -167,7 +172,26 @@ class SporeViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
+    fun flushPendingDna() {
+        val amount = pendingDnaEarnings
+        if (amount <= 0) return
+        pendingDnaEarnings = 0
+        lastDnaSaveTime = System.currentTimeMillis()
+        viewModelScope.launch {
+            val pId = _selectedPlanet.value.id
+            val pSave = repository.getPlanetSaveSync(pId)
+            if (pSave != null) {
+                repository.savePlanetSave(pSave.copy(dnaPoints = pSave.dnaPoints + amount))
+            }
+            val current = repository.getCellEvolutionSync()
+            repository.saveCellEvolution(current.copy(dnaPoints = current.dnaPoints + amount))
+        }
+    }
+
     fun triggerHaptic(durationMs: Long = 25) {
+        val now = System.currentTimeMillis()
+        if (now - lastHapticTime < 60L) return
+        lastHapticTime = now
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 vibrator?.vibrate(VibrationEffect.createOneShot(durationMs, VibrationEffect.DEFAULT_AMPLITUDE))
