@@ -2,15 +2,12 @@ package com.example.spore.ui.components
 
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.rotate
-import com.example.spore.game.engine.Vector2
 import com.example.spore.game.terrain.CoralStructure
 import com.example.spore.game.terrain.HydrothermalVent
 import com.example.spore.game.terrain.KelpPlant
@@ -24,15 +21,14 @@ import kotlin.math.sin
 /**
  * High-performance, zero-allocation visual renderer for oceanic terrain,
  * seabed bathymetry, water ripples, swimming wakes, and sun caustics.
+ * Fully adapted to each planet's color identity (especially Ametistia's amethyst/violet palette).
  */
 object OceanVisualRenderer {
 
     private val kelpPath = Path()
-    private val wavePath = Path()
-    private val sandDunePath = Path()
 
     /**
-     * Renders the living ocean floor: sand ridges, swaying kelp fronds,
+     * Renders the living ocean floor: sand/silt ridges, swaying kelp fronds,
      * hydrothermal vents, and bioluminescent corals.
      */
     fun drawSeabedTerrain(
@@ -49,17 +45,16 @@ object OceanVisualRenderer {
         worldHeight: Float,
         timeSeconds: Float
     ) {
-        // 1. Draw Submerged Sand Ripples in shallows
+        // 1. Draw Submerged Silt/Sand Ripples in shallows (themed per planet)
         drawSandDuneRipples(
             drawScope = drawScope,
             camX = camX,
             camY = camY,
             zoom = zoom,
-            viewLeft = viewLeft,
-            viewRight = viewRight,
             viewTop = viewTop,
             viewBottom = viewBottom,
-            timeSeconds = timeSeconds
+            timeSeconds = timeSeconds,
+            duneColor = terrain.theme.duneColor
         )
 
         // 2. Draw Bioluminescent Corals (Culled to viewport)
@@ -102,7 +97,7 @@ object OceanVisualRenderer {
             val ky = kelp.anchor.y
             if (isInView(kx, ky, viewLeft, viewRight, viewTop, viewBottom)) {
                 val screenAnchor = Offset(kx * zoom + camX, ky * zoom + camY)
-                drawSwayingKelp(drawScope, screenAnchor, kelp, zoom, timeSeconds)
+                drawSwayingKelp(drawScope, screenAnchor, kelp, zoom, timeSeconds, terrain.theme.duneColor)
             }
         }
     }
@@ -119,7 +114,8 @@ object OceanVisualRenderer {
         viewLeft: Float,
         viewRight: Float,
         viewTop: Float,
-        viewBottom: Float
+        viewBottom: Float,
+        troughColor: Color = Color(0xFF010A14)
     ) {
         // Draw active ripples
         for (i in 0 until WaterRippleSystem.MAX_RIPPLES) {
@@ -134,11 +130,11 @@ object OceanVisualRenderer {
             val scaledRadius = ripple.currentRadius * zoom
             val scaledWidth = (ripple.wavelength * 0.75f * zoom).coerceAtLeast(2.5f)
             val crestAlpha = (ripple.amplitude * 0.55f).coerceIn(0f, 1f)
-            val troughAlpha = (ripple.amplitude * 0.28f).coerceIn(0f, 1f)
+            val troughAlpha = (ripple.amplitude * 0.30f).coerceIn(0f, 1f)
 
-            // Inner dark fluid trough (relieve de agua)
+            // Inner dark fluid trough (planet-adapted relief)
             drawScope.drawCircle(
-                color = Color(0xFF001830).copy(alpha = troughAlpha),
+                color = troughColor.copy(alpha = troughAlpha),
                 radius = (scaledRadius - scaledWidth * 0.5f).coerceAtLeast(1f),
                 center = screenPos,
                 style = Stroke(width = scaledWidth * 0.8f)
@@ -227,7 +223,7 @@ object OceanVisualRenderer {
     }
 
     /**
-     * Renders sunlight caustics and underwater atmospheric god rays.
+     * Renders sunlight caustics and underwater atmospheric god rays matching the planet's palette.
      */
     fun drawWaterCausticsAndSunbeams(
         drawScope: DrawScope,
@@ -237,11 +233,13 @@ object OceanVisualRenderer {
         camY: Float,
         zoom: Float,
         timeSeconds: Float,
-        biome: OceanBiomeType
+        biome: OceanBiomeType,
+        causticColor: Color,
+        sunbeamColor: Color
     ) {
         if (biome.causticsIntensity <= 0.05f) return
 
-        // 1. Moving Caustics Mesh Lattice
+        // 1. Moving Caustics Mesh Lattice (colored per planet theme)
         val causticSpacing = 160f * zoom
         val startX = (camX % causticSpacing) - causticSpacing
         val startY = (camY % causticSpacing) - causticSpacing
@@ -251,7 +249,7 @@ object OceanVisualRenderer {
         while (x < screenWidth + causticSpacing) {
             val waveOsc = sin(x * 0.015f + timeSeconds * 1.2f) * 14f * zoom
             drawScope.drawLine(
-                color = Color(0xFF80D8FF).copy(alpha = alphaBase),
+                color = causticColor.copy(alpha = alphaBase),
                 start = Offset(x + waveOsc, 0f),
                 end = Offset(x - waveOsc, screenHeight),
                 strokeWidth = 12f * zoom
@@ -263,7 +261,7 @@ object OceanVisualRenderer {
         while (y < screenHeight + causticSpacing) {
             val waveOsc = cos(y * 0.015f + timeSeconds * 1.5f) * 14f * zoom
             drawScope.drawLine(
-                color = Color(0xFF00E5FF).copy(alpha = alphaBase * 0.8f),
+                color = causticColor.copy(alpha = alphaBase * 0.85f),
                 start = Offset(0f, y + waveOsc),
                 end = Offset(screenWidth, y - waveOsc),
                 strokeWidth = 10f * zoom
@@ -282,8 +280,8 @@ object OceanVisualRenderer {
                 drawScope.drawRect(
                     brush = Brush.linearGradient(
                         colors = listOf(
-                            Color(0xFFE0F7FA).copy(alpha = rayAlpha),
-                            Color(0xFF80DEEA).copy(alpha = rayAlpha * 0.4f),
+                            sunbeamColor.copy(alpha = rayAlpha),
+                            sunbeamColor.copy(alpha = rayAlpha * 0.35f),
                             Color.Transparent
                         ),
                         start = Offset(rayX, 0f),
@@ -301,11 +299,10 @@ object OceanVisualRenderer {
         camX: Float,
         camY: Float,
         zoom: Float,
-        viewLeft: Float,
-        viewRight: Float,
         viewTop: Float,
         viewBottom: Float,
-        timeSeconds: Float
+        timeSeconds: Float,
+        duneColor: Color
     ) {
         val duneSpacing = 180f
         val startDuneY = (viewTop / duneSpacing).toInt() * duneSpacing
@@ -314,7 +311,7 @@ object OceanVisualRenderer {
             val screenY = dy * zoom + camY
             val waveShift = sin(dy * 0.02f + timeSeconds * 0.4f) * 8f * zoom
             drawScope.drawLine(
-                color = Color(0xFF004D40).copy(alpha = 0.12f),
+                color = duneColor.copy(alpha = 0.16f),
                 start = Offset(0f, screenY + waveShift),
                 end = Offset(drawScope.size.width, screenY + waveShift + 6f * zoom),
                 strokeWidth = 5f * zoom
@@ -328,7 +325,8 @@ object OceanVisualRenderer {
         screenAnchor: Offset,
         kelp: KelpPlant,
         zoom: Float,
-        timeSeconds: Float
+        timeSeconds: Float,
+        holdfastColor: Color
     ) {
         kelpPath.reset()
         kelpPath.moveTo(screenAnchor.x, screenAnchor.y)
@@ -380,7 +378,7 @@ object OceanVisualRenderer {
 
         // Holdfast anchor rock
         drawScope.drawCircle(
-            color = Color(0xFF1B382B),
+            color = holdfastColor,
             radius = 7f * zoom,
             center = screenAnchor
         )
@@ -409,9 +407,9 @@ object OceanVisualRenderer {
             size = Size(w, h)
         )
 
-        // Volcanic sulfur rims
+        // Mineral crystal rims
         drawScope.drawRect(
-            color = Color(0xFFFFAB00).copy(alpha = 0.7f),
+            color = vent.glowColor.copy(alpha = 0.75f),
             topLeft = Offset(chimneyLeft - 2f * zoom, chimneyTop),
             size = Size(w + 4f * zoom, 6f * zoom)
         )
@@ -422,7 +420,7 @@ object OceanVisualRenderer {
             brush = Brush.radialGradient(
                 colors = listOf(
                     vent.glowColor.copy(alpha = 0.85f * pulse),
-                    Color(0xFFFF3D00).copy(alpha = 0.35f * pulse),
+                    vent.glowColor.copy(alpha = 0.35f * pulse),
                     Color.Transparent
                 ),
                 center = Offset(screenPos.x, chimneyTop),

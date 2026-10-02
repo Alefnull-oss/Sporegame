@@ -15,11 +15,11 @@ import androidx.compose.ui.graphics.nativeCanvas
  *
  * Leverages AGSL (Android Graphics Shading Language) on the device's hardware GPU (API 33+)
  * to calculate in parallel per pixel:
- * - Multi-octave wave caustics (cáusticas de luz marina profunda)
+ * - Multi-octave wave caustics adapted to the active planetary color palette
  * - Hydrodynamic water ripple displacement and wake refraction
- * - Depth color absorption and subsurface light scattering
+ * - Continuous depth color absorption and subsurface light scattering
  *
- * Provides a seamless Skia GPU hardware fallback for universal compatibility across all Android versions.
+ * Provides an ultra-smooth Skia GPU hardware fallback for universal compatibility across all Android versions.
  */
 class GpuOceanShader {
 
@@ -34,6 +34,7 @@ class GpuOceanShader {
             uniform float uZoom;
             uniform float3 uDeepColor;
             uniform float3 uShallowColor;
+            uniform float3 uCausticColor;
             uniform float4 uPlayerRipple; // (worldX, worldY, radius, amplitude)
             uniform float4 uRipple0;      // (worldX, worldY, radius, amplitude)
             uniform float4 uRipple1;
@@ -52,15 +53,15 @@ class GpuOceanShader {
 
                 float c = (c1 + c2 + c3) / 3.0;
                 // High-contrast sharp caustic ridges
-                return pow(clamp(c * 0.5 + 0.5, 0.0, 1.0), 3.5);
+                return pow(clamp(c * 0.5 + 0.5, 0.0, 1.0), 3.0);
             }
 
             // Wave height from expanding circular ripple
             float evaluateRipple(float2 worldPos, float4 ripple) {
-                if (ripple.w <= 0.005) return 0.0;
+                if (ripple.w <= 0.01) return 0.0;
                 float d = length(worldPos - ripple.xy);
                 float diff = abs(d - ripple.z);
-                float ringWidth = 22.0;
+                float ringWidth = 24.0;
                 if (diff < ringWidth) {
                     float factor = 1.0 - (diff / ringWidth);
                     return sin(factor * 3.14159) * ripple.w;
@@ -78,21 +79,21 @@ class GpuOceanShader {
 
                 // Compute wave displacement from swimming ripples
                 float totalRipple = 0.0;
-                totalRipple += evaluateRipple(worldPos, uPlayerRipple) * 1.6;
+                totalRipple += evaluateRipple(worldPos, uPlayerRipple) * 1.4;
                 totalRipple += evaluateRipple(worldPos, uRipple0);
                 totalRipple += evaluateRipple(worldPos, uRipple1);
                 totalRipple += evaluateRipple(worldPos, uRipple2);
                 totalRipple += evaluateRipple(worldPos, uRipple3);
 
                 // Perturb caustic sample coordinate using wave ripples (fluid refraction)
-                float2 causticCoord = worldPos + float2(totalRipple * 28.0, totalRipple * 28.0);
+                float2 causticCoord = worldPos + float2(totalRipple * 22.0, totalRipple * 22.0);
                 float caustics = causticPattern(causticCoord, uTime);
 
-                // Water highlights & ripple crests
-                float3 causticColor = float3(0.55, 0.95, 1.0) * caustics * 0.42;
-                float3 rippleCrestColor = float3(0.70, 0.98, 1.0) * clamp(totalRipple * 0.85, 0.0, 0.85);
+                // Water highlights & ripple crests tinted with the planetary caustic color
+                float3 waveCaustics = uCausticColor * caustics * 0.35;
+                float3 rippleCrestColor = uCausticColor * clamp(totalRipple * 0.70, 0.0, 0.70);
 
-                float3 finalColor = baseWater + causticColor + rippleCrestColor;
+                float3 finalColor = baseWater + waveCaustics + rippleCrestColor;
                 return half4(clamp(finalColor, 0.0, 1.0), 1.0);
             }
         """
@@ -113,7 +114,6 @@ class GpuOceanShader {
                 shaderPaint.shader = runtimeShader
                 isShaderInitialized = true
             } catch (_: Throwable) {
-                // Gracefully fall back to Canvas Skia pipeline
                 isShaderInitialized = false
                 runtimeShader = null
             }
@@ -134,6 +134,7 @@ class GpuOceanShader {
         timeSeconds: Float,
         deepColor: Color,
         shallowColor: Color,
+        causticColor: Color,
         playerRipple: FloatArray?, // [x, y, radius, amp]
         ripples: List<FloatArray>   // List of [x, y, radius, amp]
     ) {
@@ -146,6 +147,7 @@ class GpuOceanShader {
                 shader.setFloatUniform("uZoom", zoom)
                 shader.setFloatUniform("uDeepColor", deepColor.red, deepColor.green, deepColor.blue)
                 shader.setFloatUniform("uShallowColor", shallowColor.red, shallowColor.green, shallowColor.blue)
+                shader.setFloatUniform("uCausticColor", causticColor.red, causticColor.green, causticColor.blue)
 
                 if (playerRipple != null && playerRipple.size >= 4) {
                     shader.setFloatUniform("uPlayerRipple", playerRipple[0], playerRipple[1], playerRipple[2], playerRipple[3])
@@ -169,7 +171,9 @@ class GpuOceanShader {
                 )
                 return
             } catch (_: Throwable) {
-                // If anything fails in AGSL, seamlessly fall through to Canvas hardware rendering
+                // If anything fails in AGSL, disable permanently to prevent flickering/alternating
+                isShaderInitialized = false
+                runtimeShader = null
             }
         }
 

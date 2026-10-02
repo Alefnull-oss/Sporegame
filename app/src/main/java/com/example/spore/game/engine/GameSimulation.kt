@@ -113,7 +113,7 @@ class GameSimulation(
 
     fun setPlanet(newPlanet: PlanetDefinition) {
         planetDefinition = newPlanet
-        oceanTerrain.planet = newPlanet
+        oceanTerrain.updatePlanet(newPlanet)
         rippleSystem.clear()
         seedAmbientParticles()
         restart()
@@ -351,7 +351,7 @@ class GameSimulation(
         tickFrameCounter++
 
         // Update oceanic environment and ripple physics
-        oceanTerrain.update(deltaTime)
+        oceanTerrain.update(deltaTime, player.position)
         rippleSystem.update(deltaTime)
 
         // Update player timers

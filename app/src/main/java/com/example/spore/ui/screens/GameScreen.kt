@@ -180,7 +180,7 @@ fun GameScreen(
             val playerWorldPos = simulation.player.position
             val camX = screenCenter.x - (playerWorldPos.x * zoom)
             val camY = screenCenter.y - (playerWorldPos.y * zoom)
-            val currentBiome = simulation.oceanTerrain.getBiomeAt(playerWorldPos)
+            val currentBiome = simulation.oceanTerrain.activeBiome
 
             // Extract active ripples for GPU Shader
             val activeRipples = mutableListOf<FloatArray>()
@@ -197,7 +197,7 @@ fun GameScreen(
                 if (simulation.player.velocity.length() > 20f || simulation.player.isDashing) 0.85f else 0.25f
             )
 
-            // 0. High-Performance GPU AGSL Surface Shader (API 33+) or Skia GPU fallback
+            // 0. High-Performance GPU AGSL Surface Shader (API 33+) or Skia GPU fallback (Zero-Flicker)
             gpuOceanShader.renderOceanSurface(
                 drawScope = this,
                 screenWidth = screenWidth,
@@ -206,8 +206,9 @@ fun GameScreen(
                 camY = camY,
                 zoom = zoom,
                 timeSeconds = simulation.gameTimeSeconds,
-                deepColor = Color(planet.oceanBgColor2),
-                shallowColor = Color(currentBiome.baseShallowTint).copy(alpha = 0.85f),
+                deepColor = simulation.oceanTerrain.smoothedDeepColor,
+                shallowColor = simulation.oceanTerrain.smoothedShallowColor,
+                causticColor = simulation.oceanTerrain.smoothedCausticColor,
                 playerRipple = playerRippleData,
                 ripples = activeRipples
             )
@@ -248,7 +249,8 @@ fun GameScreen(
                 viewLeft = viewLeft,
                 viewRight = viewRight,
                 viewTop = viewTop,
-                viewBottom = viewBottom
+                viewBottom = viewBottom,
+                troughColor = simulation.oceanTerrain.theme.wakeTroughColor
             )
 
             // 3. Ambient Soup Particles (Seamless wrapped)
@@ -432,7 +434,9 @@ fun GameScreen(
                 camY = camY,
                 zoom = zoom,
                 timeSeconds = simulation.gameTimeSeconds,
-                biome = currentBiome
+                biome = currentBiome,
+                causticColor = simulation.oceanTerrain.smoothedCausticColor,
+                sunbeamColor = simulation.oceanTerrain.theme.sunbeamColor
             )
 
             // 11. Floating Notices (Zero-allocation Text Paint)
@@ -719,8 +723,10 @@ private fun GameTopHud(
 
             Spacer(modifier = Modifier.height(6.dp))
 
-            // Ocean Terrain Biome & Bathymetric Depth Status
-            val currentBiome = simulation.oceanTerrain.getBiomeAt(simulation.player.position)
+            // Ocean Terrain Biome & Bathymetric Depth Status (Themed & Zero-Flicker)
+            val currentBiome = simulation.oceanTerrain.activeBiome
+            val biomeTitle = simulation.oceanTerrain.getBiomeTitle(currentBiome)
+            val biomeColor = simulation.oceanTerrain.theme.getShallowColor(currentBiome)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -730,8 +736,8 @@ private fun GameTopHud(
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = "🌊 ${currentBiome.title}",
-                        color = Color(currentBiome.baseShallowTint),
+                        text = "🌊 $biomeTitle",
+                        color = biomeColor,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.ExtraBold
                     )
@@ -745,7 +751,7 @@ private fun GameTopHud(
                 }
                 Text(
                     text = "Océano Infinito Sin Muros",
-                    color = Color(0xFF80D8FF).copy(alpha = 0.85f),
+                    color = simulation.oceanTerrain.theme.defaultRippleColor.copy(alpha = 0.85f),
                     fontSize = 10.sp,
                     fontWeight = FontWeight.SemiBold
                 )
