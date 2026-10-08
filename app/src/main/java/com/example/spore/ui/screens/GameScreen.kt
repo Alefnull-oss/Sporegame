@@ -29,13 +29,17 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.MenuBook
+import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.Hearing
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Science
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Warning
+import com.example.spore.ui.components.SporeWorldVisualRenderer
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -225,6 +229,19 @@ fun GameScreen(
                 timeSeconds = simulation.gameTimeSeconds
             )
 
+            // 1.5. 2.5D Deep Abyss Layer (Giant shadowy leviathans swimming deep below with slow parallax)
+            OceanVisualRenderer.drawAbyssalSilhouettes(
+                drawScope = this,
+                abyssalCreatures = simulation.abyssalCreatures,
+                camX = camX,
+                camY = camY,
+                zoom = zoom,
+                screenWidth = screenWidth,
+                screenHeight = screenHeight,
+                timeSeconds = simulation.gameTimeSeconds,
+                deepWaterColor = Color(planet.oceanBgColor1)
+            )
+
             // 2. Hydrodynamic Water Ripples, Swimming Wakes & Cavitation Bubbles
             OceanVisualRenderer.drawWaterRipplesAndWakes(
                 drawScope = this,
@@ -311,7 +328,70 @@ fun GameScreen(
                 }
             }
 
-            // 7. AI Microbes (Wrapped to player view)
+            // 6.2 Acoustic Sonar Waves (Mating call concentric ripples)
+            for (w in simulation.acousticWaves) {
+                val delta = playerWorldPos.wrappedDeltaTo(w.origin, GameSimulation.WORLD_WIDTH, GameSimulation.WORLD_HEIGHT)
+                val screenPos = Offset(screenCenter.x + delta.x * zoom, screenCenter.y + delta.y * zoom)
+                SporeWorldVisualRenderer.drawAcousticWave(
+                    drawScope = this,
+                    wave = w,
+                    screenPos = screenPos,
+                    zoom = zoom
+                )
+            }
+
+            // 6.4 Primordial Meteorite Shards (Containing locked ancestral organs)
+            for (meteor in simulation.meteorShards) {
+                val delta = playerWorldPos.wrappedDeltaTo(meteor.position, GameSimulation.WORLD_WIDTH, GameSimulation.WORLD_HEIGHT)
+                val screenPos = Offset(screenCenter.x + delta.x * zoom, screenCenter.y + delta.y * zoom)
+                SporeWorldVisualRenderer.drawMeteorShard(
+                    drawScope = this,
+                    meteor = meteor,
+                    screenPos = screenPos,
+                    zoom = zoom,
+                    timeSeconds = simulation.gameTimeSeconds
+                )
+            }
+
+            // 6.6 Glowing Part Capsules (Floating genetic organ trophies)
+            for (cap in simulation.partCapsules) {
+                val delta = playerWorldPos.wrappedDeltaTo(cap.position, GameSimulation.WORLD_WIDTH, GameSimulation.WORLD_HEIGHT)
+                val screenPos = Offset(screenCenter.x + delta.x * zoom, screenCenter.y + delta.y * zoom)
+                SporeWorldVisualRenderer.drawPartCapsule(
+                    drawScope = this,
+                    capsule = cap,
+                    screenPos = screenPos,
+                    zoom = zoom,
+                    timeSeconds = simulation.gameTimeSeconds
+                )
+            }
+
+            // 6.8 Symbiotic Mate (Responding to courtship call)
+            simulation.activeMate?.let { mate ->
+                val delta = playerWorldPos.wrappedDeltaTo(mate.position, GameSimulation.WORLD_WIDTH, GameSimulation.WORLD_HEIGHT)
+                val screenPos = Offset(screenCenter.x + delta.x * zoom, screenCenter.y + delta.y * zoom)
+                SporeWorldVisualRenderer.drawSymbioticMate(
+                    drawScope = this,
+                    mate = mate,
+                    screenPos = screenPos,
+                    zoom = zoom,
+                    timeSeconds = simulation.gameTimeSeconds
+                )
+            }
+
+            // 6.9 Love Heart Bubbles (During courtship dance)
+            for (h in simulation.heartBubbles) {
+                val delta = playerWorldPos.wrappedDeltaTo(h.position, GameSimulation.WORLD_WIDTH, GameSimulation.WORLD_HEIGHT)
+                val screenPos = Offset(screenCenter.x + delta.x * zoom, screenCenter.y + delta.y * zoom)
+                SporeWorldVisualRenderer.drawHeartBubble(
+                    drawScope = this,
+                    heart = h,
+                    screenPos = screenPos,
+                    zoom = zoom
+                )
+            }
+
+            // 7. AI Microbes (Wrapped to player view with 2.5D clay rendering)
             for (m in simulation.microbes) {
                 val delta = playerWorldPos.wrappedDeltaTo(m.position, GameSimulation.WORLD_WIDTH, GameSimulation.WORLD_HEIGHT)
                 val screenX = screenCenter.x + delta.x * zoom
@@ -322,7 +402,7 @@ fun GameScreen(
                 ) {
                     val screenPos = Offset(screenX, screenY)
 
-                    // Draw Claymation Microbe
+                    // Draw Claymation Microbe with 2.5D Liquid Drop Shadow & Banking
                     CellVisualRenderer.drawCell(
                         drawScope = this,
                         center = screenPos,
@@ -335,12 +415,16 @@ fun GameScreen(
                         spikesCount = m.spikesCount,
                         hasPoison = m.hasPoison,
                         hasElectric = false,
-                        eyeType = if (m.trophicTier.level >= 3) "COMPOUND" else "BASIC",
+                        eyeType = m.eyeType,
                         timeSeconds = simulation.gameTimeSeconds,
                         softBody = m.softBody,
                         flagellaChains = m.flagellaChains,
                         jawAperture = m.jawAperture,
-                        isBiting = m.isBiting
+                        isBiting = m.isBiting,
+                        armorPlates = m.armorPlates,
+                        bankRoll = m.bankRoll,
+                        elevationZ = m.elevationZ,
+                        drawShadow = true
                     )
 
                     // Cartoon Health Bar above microbe
@@ -369,7 +453,7 @@ fun GameScreen(
                 }
             }
 
-            // 8. Player Cell (always centered in viewport)
+            // 8. Player Cell (always centered in viewport with 2.5D clay rendering)
             val playerColor = Color(cellConfig?.primaryColorHex ?: 0xFF00E5FF)
             CellVisualRenderer.drawCell(
                 drawScope = this,
@@ -390,7 +474,11 @@ fun GameScreen(
                 softBody = simulation.player.softBody,
                 flagellaChains = simulation.player.flagellaChains,
                 jawAperture = simulation.player.jawAperture,
-                isBiting = simulation.player.isBiting
+                isBiting = simulation.player.isBiting,
+                armorPlates = cellConfig?.armorPlates ?: 0,
+                bankRoll = simulation.player.bankRoll,
+                elevationZ = simulation.player.elevationZ,
+                drawShadow = true
             )
 
             // 9. Sensory Radar / Peripheral Threat Warning (Wrapped delta)
@@ -422,6 +510,32 @@ fun GameScreen(
                 }
             }
 
+            // 9.5. Symbiotic Mating Partner Sonar Compass Pointer (Directs player to responding mate)
+            simulation.activeMate?.let { mate ->
+                if (!simulation.isMatingDanceActive) {
+                    val mateDelta = playerWorldPos.wrappedDeltaTo(mate.position, GameSimulation.WORLD_WIDTH, GameSimulation.WORLD_HEIGHT)
+                    val mAngle = mateDelta.angle()
+                    val beaconDist = (screenHeight * 0.40f).coerceAtMost(screenWidth * 0.40f)
+                    val beaconPos = screenCenter + Offset(cos(mAngle) * beaconDist, sin(mAngle) * beaconDist)
+
+                    drawCircle(
+                        color = Color(0xFFFF4081).copy(alpha = 0.35f),
+                        radius = 18f * zoom,
+                        center = beaconPos
+                    )
+                    drawCircle(
+                        color = Color(0xFFFF4081),
+                        radius = 11f * zoom,
+                        center = beaconPos
+                    )
+                    drawCircle(
+                        color = Color.White,
+                        radius = 4f * zoom,
+                        center = beaconPos
+                    )
+                }
+            }
+
             // 10. Water Surface Sun Caustics & Volumetric God Rays
             OceanVisualRenderer.drawWaterCausticsAndSunbeams(
                 drawScope = this,
@@ -434,6 +548,26 @@ fun GameScreen(
                 biome = currentBiome,
                 causticColor = simulation.oceanTerrain.smoothedCausticColor,
                 sunbeamColor = simulation.oceanTerrain.theme.sunbeamColor
+            )
+
+            // 10.5. 2.5D Foreground Floaters (Out-of-focus bokeh bubbles and diatoms with 1.45x fast parallax)
+            OceanVisualRenderer.drawForegroundFloaters(
+                drawScope = this,
+                floaters = simulation.foregroundFloaters,
+                camX = camX,
+                camY = camY,
+                zoom = zoom,
+                screenWidth = screenWidth,
+                screenHeight = screenHeight,
+                timeSeconds = simulation.gameTimeSeconds
+            )
+
+            // 10.8. 2.5D Microscope Laboratory Vignette
+            OceanVisualRenderer.drawMicroscopeVignette(
+                drawScope = this,
+                screenWidth = screenWidth,
+                screenHeight = screenHeight,
+                vignetteColor = Color(planet.oceanBgColor1)
             )
 
             // 11. Floating Notices (Zero-allocation Text Paint)
@@ -490,6 +624,10 @@ fun GameScreen(
             onOpenTrophicWeb = {
                 isPaused = true
                 viewModel.navigateTo(AppScreen.TROPHIC_WEB)
+            },
+            onOpenCinematic = {
+                isPaused = true
+                viewModel.playPlanetCinematic(planet)
             },
             modifier = Modifier
                 .align(Alignment.TopCenter)
@@ -558,6 +696,25 @@ fun GameScreen(
             }
         }
 
+        // New Part Discovered Notification Card
+        val newlyUnlockedPart by viewModel.newlyUnlockedPartNotice.collectAsStateWithLifecycle()
+        newlyUnlockedPart?.let { partName ->
+            PartDiscoveredOverlay(
+                partName = partName,
+                onDismiss = { viewModel.dismissUnlockedPartNotice() },
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 110.dp)
+            )
+        }
+
+        // Courtship Dance Active Overlay
+        if (simulation.isMatingDanceActive) {
+            CourtshipDanceOverlay(
+                modifier = Modifier.align(Alignment.Center)
+            )
+        }
+
         // Game Over Dialog Overlay
         if (simulation.isGameOver) {
             GameOverOverlay(
@@ -583,6 +740,7 @@ private fun GameTopHud(
     onOpenGalaxy: () -> Unit,
     onOpenEditor: () -> Unit,
     onOpenTrophicWeb: () -> Unit,
+    onOpenCinematic: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Card(
@@ -674,6 +832,20 @@ private fun GameTopHud(
                         )
                     }
 
+                    // Planet Scientific Genesis Cinematic Button
+                    IconButton(
+                        onClick = onOpenCinematic,
+                        modifier = Modifier
+                            .size(34.dp)
+                            .testTag("open_cinematic_hud")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Movie,
+                            contentDescription = "Ver Génesis Científico",
+                            tint = Color(0xFFFFD54F)
+                        )
+                    }
+
                     IconButton(
                         onClick = onOpenTrophicWeb,
                         modifier = Modifier
@@ -687,11 +859,14 @@ private fun GameTopHud(
                         )
                     }
 
-                    // Evolution Lab Button (Isolated pulse recomposition)
+                    // Spore-like Mating Call Button
                     val readyToEvolve = simulation.player.dnaPoints >= 20
-                    EvolveLabButton(
+                    MatingCallButton(
                         readyToEvolve = readyToEvolve,
-                        onOpenEditor = onOpenEditor
+                        activeMate = simulation.activeMate,
+                        playerPos = simulation.player.position,
+                        onMatingCall = { simulation.triggerMatingCall() },
+                        onDirectEditor = onOpenEditor
                     )
                 }
             }
@@ -810,44 +985,184 @@ private fun GameTopHud(
 }
 
 @Composable
-private fun EvolveLabButton(
+private fun MatingCallButton(
     readyToEvolve: Boolean,
-    onOpenEditor: () -> Unit
+    activeMate: com.example.spore.game.engine.SymbioticMate?,
+    playerPos: com.example.spore.game.engine.Vector2,
+    onMatingCall: () -> Unit,
+    onDirectEditor: () -> Unit
 ) {
-    val alpha = if (readyToEvolve) {
+    val alpha = if (readyToEvolve || activeMate != null) {
         val pulseAnim = rememberInfiniteTransition(label = "pulse")
         val pulseAlpha by pulseAnim.animateFloat(
-            initialValue = 0.65f,
+            initialValue = 0.70f,
             targetValue = 1.0f,
-            animationSpec = infiniteRepeatable(tween(700), RepeatMode.Reverse),
+            animationSpec = infiniteRepeatable(tween(650), RepeatMode.Reverse),
             label = "pulseAlpha"
         )
         pulseAlpha
     } else 1.0f
 
-    Button(
-        onClick = onOpenEditor,
-        colors = ButtonDefaults.buttonColors(
-            containerColor = if (readyToEvolve) Color(0xFF00E5FF).copy(alpha = alpha) else Color(0xFF1E3A5F)
-        ),
-        shape = RoundedCornerShape(12.dp),
-        modifier = Modifier
-            .height(34.dp)
-            .testTag("open_editor_hud")
-    ) {
-        Icon(
-            imageVector = Icons.Default.Science,
-            contentDescription = "Laboratorio",
-            tint = Color.Black,
-            modifier = Modifier.size(16.dp)
-        )
+    val mateDistance = activeMate?.let {
+        playerPos.wrappedDistanceTo(it.position, com.example.spore.game.engine.GameSimulation.WORLD_WIDTH, com.example.spore.game.engine.GameSimulation.WORLD_HEIGHT).toInt()
+    }
+
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Button(
+            onClick = onMatingCall,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = when {
+                    activeMate != null -> Color(0xFFFF4081).copy(alpha = alpha)
+                    readyToEvolve -> Color(0xFFFF80AB).copy(alpha = alpha)
+                    else -> Color(0xFF1E3A5F)
+                }
+            ),
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier
+                .height(34.dp)
+                .testTag("mating_call_hud")
+        ) {
+            Icon(
+                imageVector = Icons.Default.Favorite,
+                contentDescription = "Canto de Cortejo",
+                tint = if (readyToEvolve || activeMate != null) Color.White else Color(0xFF90A4AE),
+                modifier = Modifier.size(16.dp)
+            )
+            Spacer(modifier = Modifier.width(4.dp))
+            Text(
+                text = if (activeMate != null) "${mateDistance}µm ❤️" else "Llamar",
+                color = if (readyToEvolve || activeMate != null) Color.White else Color(0xFFB0BEC5),
+                fontWeight = FontWeight.ExtraBold,
+                fontSize = 12.sp
+            )
+        }
+
         Spacer(modifier = Modifier.width(4.dp))
-        Text(
-            text = "Mutar",
-            color = Color.Black,
-            fontWeight = FontWeight.Bold,
-            fontSize = 12.sp
-        )
+
+        // Direct editor quick shortcut
+        IconButton(
+            onClick = onDirectEditor,
+            modifier = Modifier
+                .size(34.dp)
+                .background(Color(0xFF0F2744), CircleShape)
+                .testTag("open_editor_hud")
+        ) {
+            Icon(
+                imageVector = Icons.Default.Science,
+                contentDescription = "Laboratorio Directo",
+                tint = Color(0xFF00E5FF),
+                modifier = Modifier.size(16.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun PartDiscoveredOverlay(
+    partName: String,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Color(0xEE0B1F38)),
+        shape = RoundedCornerShape(18.dp),
+        border = androidx.compose.foundation.BorderStroke(2.dp, Color(0xFFFFD54F)),
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 24.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                Surface(
+                    color = Color(0xFFFFD54F).copy(alpha = 0.2f),
+                    shape = CircleShape,
+                    modifier = Modifier.size(42.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Default.AutoAwesome,
+                            contentDescription = null,
+                            tint = Color(0xFFFFD54F),
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.width(12.dp))
+                Column {
+                    Text(
+                        text = "¡GENOMA ASIMILADO!",
+                        color = Color(0xFFFFD54F),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                    Text(
+                        text = partName,
+                        color = Color.White,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Disponible en el Nido al reproducirte (+35 ADN)",
+                        color = Color(0xFF80D8FF),
+                        fontSize = 11.sp
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.width(8.dp))
+            Button(
+                onClick = onDismiss,
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFD54F)),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Text("Listo", color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+            }
+        }
+    }
+}
+
+@Composable
+private fun CourtshipDanceOverlay(
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        color = Color(0xDD000000),
+        shape = RoundedCornerShape(20.dp),
+        border = androidx.compose.foundation.BorderStroke(2.dp, Color(0xFFFF4081)),
+        modifier = modifier.padding(24.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Default.Favorite,
+                    contentDescription = null,
+                    tint = Color(0xFFFF4081),
+                    modifier = Modifier.size(26.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "¡Danza de Cortejo Simbiótico!",
+                    color = Color.White,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 16.sp
+                )
+            }
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "Fusión genética celular en curso... Pasando al Nido de Metamorfosis 🧬",
+                color = Color(0xFFFF80AB),
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium
+            )
+        }
     }
 }
 

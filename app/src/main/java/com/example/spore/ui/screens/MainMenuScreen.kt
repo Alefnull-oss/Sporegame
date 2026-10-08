@@ -24,6 +24,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.MenuBook
+import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Science
@@ -147,7 +148,9 @@ fun MainMenuScreen(
                 hasPoison = draft.poisonGland,
                 hasElectric = draft.electricOrgan,
                 eyeType = draft.eyeType,
-                timeSeconds = animTime
+                timeSeconds = animTime,
+                armorPlates = draft.armorPlates,
+                drawShadow = true
             )
         }
 
@@ -259,30 +262,61 @@ fun MainMenuScreen(
                     .padding(bottom = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                // Change Planet / Galaxy Button
-                OutlinedButton(
-                    onClick = { viewModel.navigateTo(AppScreen.GALAXY_MAP) },
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(selectedPlanet.atmosphereColorHex)),
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(46.dp)
-                        .testTag("change_planet_button")
+                // Change Planet & Genesis Origin Cinematic Buttons
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Public,
-                        contentDescription = null,
-                        tint = Color(selectedPlanet.atmosphereColorHex),
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "Planeta: ${selectedPlanet.name} • ${selectedPlanet.oceanName}",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 12.sp,
-                        color = Color(selectedPlanet.atmosphereColorHex)
-                    )
+                    OutlinedButton(
+                        onClick = { viewModel.navigateTo(AppScreen.GALAXY_MAP) },
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(selectedPlanet.atmosphereColorHex)),
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(46.dp)
+                            .testTag("change_planet_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Public,
+                            contentDescription = null,
+                            tint = Color(selectedPlanet.atmosphereColorHex),
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "${selectedPlanet.name}",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp,
+                            color = Color(selectedPlanet.atmosphereColorHex),
+                            maxLines = 1
+                        )
+                    }
+
+                    OutlinedButton(
+                        onClick = { viewModel.playPlanetCinematic(selectedPlanet) },
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFFFD54F)),
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .height(46.dp)
+                            .testTag("main_menu_genesis_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Movie,
+                            contentDescription = null,
+                            tint = Color(0xFFFFD54F),
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Génesis",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp,
+                            color = Color(0xFFFFD54F)
+                        )
+                    }
                 }
 
                 // Play Button

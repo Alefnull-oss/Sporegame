@@ -3,6 +3,7 @@ package com.example.spore.game.engine
 import androidx.compose.ui.graphics.Color
 import com.example.spore.data.model.CellEvolutionEntity
 import com.example.spore.data.model.PlanetDefinition
+import com.example.spore.game.audio.SporeAudioEngine
 import com.example.spore.game.physics.ElasticAppendageChain
 import com.example.spore.game.physics.SoftBodyMembrane
 import com.example.spore.game.physics.SporePhysicsEngine
@@ -23,16 +24,18 @@ class GameSimulation(
     val onSpeciesDiscovered: (String) -> Unit = {},
     val onSpeciesEaten: (String) -> Unit = {},
     val onPlayerKilled: (String) -> Unit = {},
-    val onHapticImpact: () -> Unit = {}
+    val onHapticImpact: () -> Unit = {},
+    val onPartUnlocked: (String, String) -> Unit = { _, _ -> },
+    val onMatingDanceComplete: () -> Unit = {}
 ) {
     companion object {
         const val WORLD_WIDTH = 7200f
         const val WORLD_HEIGHT = 7200f
 
-        // Scarcity tuning: food and DNA are scarce and distributed in distinct nutrient patches
         const val MAX_FOOD = 75
         const val MAX_DNA_STRANDS = 5
         const val MAX_AI = 22
+        const val MAX_METEORS = 4
         const val DRAG_COEFFICIENT = 0.94f
     }
 
@@ -43,6 +46,8 @@ class GameSimulation(
     var playerStats: CellStats = CellEvolutionConfig.calculateStats(initialEvolution)
         private set
 
+    val unlockedPartsSet: MutableSet<String> = CellEvolutionConfig.parseUnlockedParts(initialEvolution.unlockedParts).toMutableSet()
+
     val player: PlayerCell = PlayerCell(
         position = Vector2(WORLD_WIDTH / 2f, WORLD_HEIGHT / 2f),
         stats = playerStats,
@@ -52,11 +57,12 @@ class GameSimulation(
         maxHealth = playerStats.maxHealth
     )
 
-    // Oceanic Systems: Water ripples, hydrodynamic wakes, seabed terrain & currents
+    // Oceanic Systems
     val rippleSystem = WaterRippleSystem(WORLD_WIDTH, WORLD_HEIGHT)
     val oceanTerrain = OceanTerrainSystem(WORLD_WIDTH, planetDefinition)
     val physicsEngine = SporePhysicsEngine()
     private var playerSwimRippleTimer = 0f
+    private var photosynthesisTimer = 0f
 
     val foods = mutableListOf<FoodParticle>()
     val microbes = mutableListOf<AiMicrobe>()
@@ -64,21 +70,26 @@ class GameSimulation(
     val electricBlasts = mutableListOf<ElectricBlast>()
     val notices = mutableListOf<FloatingNotice>()
     val ambientParticles = mutableListOf<AmbientParticle>()
+    val abyssalCreatures = mutableListOf<AbyssalSilhouette>()
+    val foregroundFloaters = mutableListOf<ForegroundFloater>()
 
-    // Anti-lag spatial partition grids (O(1) neighbor lookups)
+    // Spore-like World Entities
+    val meteorShards = mutableListOf<MeteorShard>()
+    val partCapsules = mutableListOf<PartCapsule>()
+    val acousticWaves = mutableListOf<AcousticWave>()
+    val heartBubbles = mutableListOf<HeartBubble>()
+
+    var activeMate: SymbioticMate? = null
+    var isMatingDanceActive: Boolean = false
+    var matingDanceTimer: Float = 0f
+    var isMatingCallActive: Boolean = false
+    var newlyDiscoveredPartEvent: String? = null
+
+    // Anti-lag spatial partition grids
     private val foodGrid = SpatialGrid<FoodParticle>(WORLD_WIDTH, WORLD_HEIGHT, cellSize = 450f)
     private val microbeGrid = SpatialGrid<AiMicrobe>(WORLD_WIDTH, WORLD_HEIGHT, cellSize = 450f)
     private var isFoodGridDirty = true
     private val discoveredSpecies = HashSet<String>()
-
-    // Nutrient bloom centers (hotspots where phytoplankton concentrates)
-    private val bloomCenters = listOf(
-        Vector2(1200f, 1200f),
-        Vector2(3600f, 1400f),
-        Vector2(2400f, 2600f),
-        Vector2(1100f, 3700f),
-        Vector2(3700f, 3600f)
-    )
 
     var isGameOver = false
         private set
@@ -92,12 +103,59 @@ class GameSimulation(
         private set
     var readyToEvolveNoticeShown: Boolean = false
 
-    // Anti-lag LOD tick counter
     private var tickFrameCounter: Int = 0
 
     init {
         seedAmbientParticles()
+        seedAbyssalCreatures()
+        seedForegroundFloaters()
         spawnInitialEcosystem()
+    }
+
+    private fun seedAbyssalCreatures() {
+        abyssalCreatures.clear()
+        val abyssColor = Color(planetDefinition.oceanBgColor1)
+        val deepCreatureCount = 7
+        for (i in 0 until deepCreatureCount) {
+            val startAngle = Random.nextFloat() * 2f * PI.toFloat()
+            val speed = Random.nextFloat() * 25f + 20f
+            abyssalCreatures.add(
+                AbyssalSilhouette(
+                    id = idGen.incrementAndGet(),
+                    position = Vector2(Random.nextFloat() * WORLD_WIDTH, Random.nextFloat() * WORLD_HEIGHT),
+                    velocity = Vector2.fromAngle(startAngle, speed),
+                    angle = startAngle,
+                    length = Random.nextFloat() * 240f + 180f,
+                    width = Random.nextFloat() * 70f + 55f,
+                    segmentCount = Random.nextInt(4, 7),
+                    tailWobbleSpeed = Random.nextFloat() * 0.8f + 0.9f,
+                    tailPhaseOffset = Random.nextFloat() * 10f,
+                    silhouetteColor = abyssColor,
+                    alpha = Random.nextFloat() * 0.12f + 0.16f,
+                    parallaxFactor = 0.42f
+                )
+            )
+        }
+    }
+
+    private fun seedForegroundFloaters() {
+        foregroundFloaters.clear()
+        val rimColor = Color(planetDefinition.oceanRimColor)
+        val floaterCount = 42
+        for (i in 0 until floaterCount) {
+            foregroundFloaters.add(
+                ForegroundFloater(
+                    id = idGen.incrementAndGet(),
+                    position = Vector2(Random.nextFloat() * WORLD_WIDTH, Random.nextFloat() * WORLD_HEIGHT),
+                    velocity = Vector2(Random.nextFloat() * 12f - 6f, Random.nextFloat() * 12f - 6f),
+                    radius = Random.nextFloat() * 14f + 5f,
+                    alpha = Random.nextFloat() * 0.28f + 0.12f,
+                    color = if (Random.nextBoolean()) rimColor else Color.White,
+                    wobblePhase = Random.nextFloat() * 10f,
+                    floaterKind = Random.nextInt(3)
+                )
+            )
+        }
     }
 
     private fun seedAmbientParticles() {
@@ -122,11 +180,15 @@ class GameSimulation(
         oceanTerrain.updatePlanet(newPlanet)
         rippleSystem.clear()
         seedAmbientParticles()
+        seedAbyssalCreatures()
+        seedForegroundFloaters()
         restart()
     }
 
     fun updateEvolutionConfig(newEntity: CellEvolutionEntity) {
         evolutionEntity = newEntity
+        unlockedPartsSet.clear()
+        unlockedPartsSet.addAll(CellEvolutionConfig.parseUnlockedParts(newEntity.unlockedParts))
         playerStats = CellEvolutionConfig.calculateStats(newEntity)
         player.stats = playerStats
         player.maxHealth = playerStats.maxHealth
@@ -141,10 +203,12 @@ class GameSimulation(
         while (microbes.size < 14) {
             spawnAiMicrobe()
         }
+        while (meteorShards.size < MAX_METEORS) {
+            spawnMeteorShard()
+        }
     }
 
     private fun spawnScatteredFood() {
-        // Choose whether to spawn in a FastNoiseLite cellular nutrient bloom or drifting in open water
         val isBloom = Random.nextFloat() < 0.65f
         var pos = Vector2(Random.nextFloat() * WORLD_WIDTH, Random.nextFloat() * WORLD_HEIGHT)
         if (isBloom) {
@@ -195,6 +259,44 @@ class GameSimulation(
         }
         foods.add(food)
         isFoodGridDirty = true
+    }
+
+    private fun spawnMeteorShard() {
+        val lockedCandidates = CellEvolutionConfig.ALL_PARTS.filter { !unlockedPartsSet.contains(it.id) }
+        val targetPart = if (lockedCandidates.isNotEmpty()) {
+            lockedCandidates.random()
+        } else {
+            CellEvolutionConfig.ALL_PARTS.random()
+        }
+
+        val angle = Random.nextFloat() * 2f * PI.toFloat()
+        val dist = Random.nextFloat() * 1400f + 700f
+        val pos = Vector2(
+            wrapCoord(player.position.x + cos(angle) * dist, WORLD_WIDTH),
+            wrapCoord(player.position.y + sin(angle) * dist, WORLD_HEIGHT)
+        )
+
+        meteorShards.add(
+            MeteorShard(
+                id = idGen.incrementAndGet(),
+                position = pos,
+                velocity = Vector2(Random.nextFloat() * 16f - 8f, Random.nextFloat() * 16f - 8f),
+                health = 60f,
+                maxHealth = 60f,
+                radius = 32f,
+                containedPartId = targetPart.id,
+                partName = targetPart.name,
+                rotation = Random.nextFloat() * 6.28f,
+                crustedColor = when (planetDefinition.id) {
+                    "planet_rubrum" -> Color(0xFF5D2418)
+                    "planet_toxis" -> Color(0xFF2E4B18)
+                    "planet_ametistia" -> Color(0xFF38184C)
+                    else -> Color(0xFF4E342E)
+                },
+                coreColor = Color(0xFFFFD54F),
+                wobblePhase = Random.nextFloat() * 10f
+            )
+        )
     }
 
     private fun spawnAiMicrobe() {
@@ -270,6 +372,8 @@ class GameSimulation(
                         ciliaCount = 1,
                         flagellaCount = 2,
                         spikesCount = 1,
+                        armorPlates = 1,
+                        eyeType = "BASIC",
                         targetSpeed = 155f
                     )
                 }
@@ -291,6 +395,8 @@ class GameSimulation(
                         flagellaCount = 2,
                         spikesCount = 1,
                         hasJet = true,
+                        armorPlates = 1,
+                        eyeType = "COMPOUND",
                         targetSpeed = 185f
                     )
                 } else {
@@ -308,6 +414,8 @@ class GameSimulation(
                         ciliaCount = 1,
                         flagellaCount = 1,
                         spikesCount = 3,
+                        armorPlates = 2,
+                        eyeType = "COMPOUND",
                         targetSpeed = 145f
                     )
                 }
@@ -328,6 +436,8 @@ class GameSimulation(
                     flagellaCount = 3,
                     spikesCount = 4,
                     hasPoison = true,
+                    armorPlates = 3,
+                    eyeType = "COMPOUND",
                     targetSpeed = 110f
                 )
             }
@@ -351,16 +461,14 @@ class GameSimulation(
     fun update(rawDeltaTime: Float, inputDirection: Vector2) {
         if (isGameOver) return
 
-        // Anti-lag: Clamp delta time to prevent physics explosions during frame drops
         val deltaTime = rawDeltaTime.coerceIn(0.005f, 0.033f)
         gameTimeSeconds += deltaTime
         tickFrameCounter++
 
-        // Update oceanic environment and ripple physics
         oceanTerrain.update(deltaTime, player.position)
         rippleSystem.update(deltaTime)
 
-        // Update player timers
+        // Player timers
         if (player.dashCooldownTimer > 0f) player.dashCooldownTimer -= deltaTime
         if (player.poisonCooldownTimer > 0f) player.poisonCooldownTimer -= deltaTime
         if (player.electricCooldownTimer > 0f) player.electricCooldownTimer -= deltaTime
@@ -376,10 +484,14 @@ class GameSimulation(
 
         player.wobbleTimer += deltaTime * 3.5f
 
-        // Player physics & boundless movement
-        updatePlayerMovement(deltaTime, inputDirection)
+        // Courtship dance or player regular movement
+        if (isMatingDanceActive) {
+            updateCourtshipDance(deltaTime)
+        } else {
+            updatePlayerMovement(deltaTime, inputDirection)
+        }
 
-        // Hydrodynamic swimming ripples & wake generation
+        // Swimming ripples
         val playerRadius = calculatePlayerRadius()
         val playerSpeed = player.velocity.length()
         playerSwimRippleTimer += deltaTime
@@ -396,40 +508,78 @@ class GameSimulation(
             )
         }
 
+        // Epigenetic Chimeric Trait active effects:
+        // 1. Photosynthesis: Passive DNA generation in phytoplankton bloom zones
+        if (playerStats.hasPhotosynthesis) {
+            photosynthesisTimer += deltaTime
+            if (photosynthesisTimer >= 3.5f) {
+                photosynthesisTimer = 0f
+                if (oceanTerrain.isNutrientBloomZone(player.position)) {
+                    player.dnaPoints += 1
+                    onDnaCollected(1)
+                    addNotice(player.position, "+1 ADN (Fotosíntesis)", Color(0xFF76FF03))
+                }
+            }
+        }
+
+        // 2. Food Magnet vortex ciliary effect
+        if (playerStats.hasFoodMagnet) {
+            foodGrid.forEachNeighbor(player.position.x, player.position.y) { food ->
+                val d = player.position.wrappedDistanceTo(food.position, WORLD_WIDTH, WORLD_HEIGHT)
+                if (d < 190f && d > 12f) {
+                    val pullDir = food.position.wrappedDeltaTo(player.position, WORLD_WIDTH, WORLD_HEIGHT).normalized()
+                    food.position = food.position + (pullDir * (deltaTime * 190f))
+                    isFoodGridDirty = true
+                }
+            }
+        }
+
         // Rebuild anti-lag spatial grids
         rebuildSpatialGrids()
 
-        // Spawning cycle (scarce food replenishing)
+        // Spawning cycle
         if (foods.size < MAX_FOOD && Random.nextFloat() < 0.20f) {
             spawnScatteredFood()
         }
         if (microbes.size < MAX_AI && Random.nextFloat() < 0.05f) {
             spawnAiMicrobe()
         }
+        if (meteorShards.size < MAX_METEORS && Random.nextFloat() < 0.03f) {
+            spawnMeteorShard()
+        }
 
-        // Hazards
+        // Hazards & AI
         updateHazards(deltaTime)
-
-        // Microbes AI (with LOD distance culling)
         updateMicrobes(deltaTime)
 
-        // Dyn4j Physics step & elastic appendage kinematics (flagella & cilia)
+        // Physics step & appendages
         physicsEngine.stepSimulation(deltaTime)
         updateAppendages(deltaTime)
 
-        // High-performance spatial collisions
+        // Collisions
         handlePlayerFoodCollisions()
         handlePlayerMicrobeCollisions()
         handleMicrobeMicrobeCollisions()
+        handlePlayerMeteorCollisions()
+        handlePlayerCapsuleCollisions()
+
+        // Spore World Updates
+        updateMeteorShards(deltaTime)
+        updatePartCapsules(deltaTime)
+        updateAcousticWaves(deltaTime)
+        updateSymbioticMate(deltaTime)
+        updateHeartBubbles(deltaTime)
 
         // Notices & particles
         updateNotices(deltaTime)
         updateAmbient(deltaTime)
+        updateAbyssalCreatures(deltaTime)
+        updateForegroundFloaters(deltaTime)
 
-        // Evolution readiness
-        if (!readyToEvolveNoticeShown && player.dnaPoints >= 50) {
+        // Evolution readiness notification
+        if (!readyToEvolveNoticeShown && player.dnaPoints >= 30) {
             readyToEvolveNoticeShown = true
-            addNotice(player.position, "¡MUTACIÓN LISTA! Toca ADN", Color(0xFFFFD600))
+            addNotice(player.position, "¡Canto de Cortejo Disponible! Toca ❤️", Color(0xFFFF4081))
         }
     }
 
@@ -458,25 +608,76 @@ class GameSimulation(
             val diff = angleDifference(targetAngle, player.angle)
             player.angle += diff * min(1f, playerStats.turnRate * deltaTime)
 
-            // Thrust
+            val targetBank = (diff.coerceIn(-1.5f, 1.5f) * 0.42f)
+            player.bankRoll += (targetBank - player.bankRoll) * min(1f, deltaTime * 8f)
+
             val speedMult = if (player.isDashing) playerStats.dashSpeedMultiplier else 1f
             val thrust = Vector2.fromAngle(player.angle, playerStats.baseSpeed * speedMult * deltaTime * 12f)
             player.velocity = (player.velocity + thrust)
+        } else {
+            player.bankRoll += (0f - player.bankRoll) * min(1f, deltaTime * 5f)
         }
 
-        // Fluid Drag
         player.velocity = player.velocity * DRAG_COEFFICIENT
         player.position = player.position + (player.velocity * deltaTime)
 
-        // Oceanic Current Flow Drift
+        val speedMagnitude = player.velocity.length()
+        val targetElevation = if (player.isDashing) 1.6f else (speedMagnitude / 180f).coerceIn(0f, 1.0f)
+        player.elevationZ += (targetElevation - player.elevationZ) * min(1f, deltaTime * 7f)
+        player.pitchAngle = (speedMagnitude / 300f).coerceIn(0f, 0.35f)
+
         val currentFlow = oceanTerrain.getCurrentVelocityAt(player.position)
         player.position = player.position + (currentFlow * (deltaTime * 0.25f))
 
-        // Seamless infinite ocean wrap (NO WALLS)
         player.position = Vector2(
             wrapCoord(player.position.x, WORLD_WIDTH),
             wrapCoord(player.position.y, WORLD_HEIGHT)
         )
+    }
+
+    private fun updateCourtshipDance(deltaTime: Float) {
+        val mate = activeMate ?: return
+        matingDanceTimer += deltaTime
+
+        val midX = (player.position.x + mate.position.x) / 2f
+        val midY = (player.position.y + mate.position.y) / 2f
+        val orbitRadius = (calculatePlayerRadius() + mate.radius) * 0.65f
+        val orbitAngle = matingDanceTimer * 4.2f
+
+        player.position = Vector2(
+            wrapCoord(midX + cos(orbitAngle) * orbitRadius, WORLD_WIDTH),
+            wrapCoord(midY + sin(orbitAngle) * orbitRadius, WORLD_HEIGHT)
+        )
+        mate.position = Vector2(
+            wrapCoord(midX - cos(orbitAngle) * orbitRadius, WORLD_WIDTH),
+            wrapCoord(midY - sin(orbitAngle) * orbitRadius, WORLD_HEIGHT)
+        )
+        player.angle = orbitAngle + PI.toFloat() * 0.5f
+        mate.angle = orbitAngle - PI.toFloat() * 0.5f
+
+        // Emit love heart particles
+        if (Random.nextFloat() < 0.38f) {
+            heartBubbles.add(
+                HeartBubble(
+                    id = idGen.incrementAndGet(),
+                    position = Vector2(midX + Random.nextFloat() * 40f - 20f, midY + Random.nextFloat() * 40f - 20f),
+                    velocity = Vector2(Random.nextFloat() * 30f - 15f, -Random.nextFloat() * 50f - 25f),
+                    scale = Random.nextFloat() * 0.5f + 0.8f,
+                    alpha = 1f,
+                    lifeSeconds = 1.3f
+                )
+            )
+        }
+
+        if (matingDanceTimer >= 1.5f) {
+            mate.state = MateState.MATING_COMPLETED
+            isMatingDanceActive = false
+            activeMate = null
+            isMatingCallActive = false
+            addNotice(player.position, "¡Cortejo Exitoso! Huevo Primordial 🧬", Color(0xFFFFD600))
+            onHapticImpact()
+            onMatingDanceComplete()
+        }
     }
 
     private fun updateHazards(deltaTime: Float) {
@@ -490,10 +691,13 @@ class GameSimulation(
             if (!p.fromPlayer && p.position.wrappedDistanceTo(player.position, WORLD_WIDTH, WORLD_HEIGHT) < p.currentRadius + calculatePlayerRadius()) {
                 damagePlayer(p.damagePerSecond * deltaTime, "Toxina Abisal")
             }
-            // Damage microbes in vicinity
             microbeGrid.forEachNeighbor(p.position.x, p.position.y) { m ->
                 if (p.fromPlayer && p.position.wrappedDistanceTo(m.position, WORLD_WIDTH, WORLD_HEIGHT) < p.currentRadius + m.radius) {
                     m.health -= p.damagePerSecond * deltaTime * 1.5f
+                    // Chimeric perk: Paralyzing poison slows enemies by 50%
+                    if (playerStats.hasParalyzingPoison) {
+                        m.velocity = m.velocity * 0.5f
+                    }
                 }
             }
             if (p.remainingSeconds <= 0f) poisonIter.remove()
@@ -538,11 +742,9 @@ class GameSimulation(
                 continue
             }
 
-            // Anti-lag LOD: If microbe is very far (> 1400px), skip complex steering every 2nd frame
             val distToPlayer = m.position.wrappedDistanceTo(player.position, WORLD_WIDTH, WORLD_HEIGHT)
             val isFar = distToPlayer > 1400f
             if (isFar && (tickFrameCounter % 2 != 0)) {
-                // Just coast forward
                 m.position = m.position + (m.velocity * deltaTime)
                 m.position = Vector2(
                     wrapCoord(m.position.x, WORLD_WIDTH),
@@ -569,7 +771,6 @@ class GameSimulation(
             } else if (m.diet == DietType.HERBIVORE) {
                 m.state = AiState.GRAZING
                 if (m.stateTimer > 1.5f) {
-                    // Anti-lag: Query only nearby foods using spatial grid instead of full scan
                     var nearestFood: FoodParticle? = null
                     var minDist = 400f
                     foodGrid.forEachNeighbor(m.position.x, m.position.y) { food ->
@@ -612,12 +813,17 @@ class GameSimulation(
                 }
             }
 
-            // Turn towards target angle
             val diff = angleDifference(m.targetAngle, m.angle)
             val turnSpeed = 2.0f + (m.ciliaCount * 1.2f)
             m.angle += diff * min(1f, turnSpeed * deltaTime)
 
-            // Thrust & Ocean Current
+            val targetBank = (diff.coerceIn(-1.5f, 1.5f) * 0.35f)
+            m.bankRoll += (targetBank - m.bankRoll) * min(1f, deltaTime * 6f)
+            val mSpeed = m.velocity.length()
+            val targetElev = (mSpeed / 160f).coerceIn(0f, 1.0f)
+            m.elevationZ += (targetElev - m.elevationZ) * min(1f, deltaTime * 5f)
+            m.pitchAngle = (mSpeed / 250f).coerceIn(0f, 0.3f)
+
             val currentSpeed = when (m.state) {
                 AiState.FLEEING -> m.targetSpeed * 1.35f
                 AiState.HUNTING -> m.targetSpeed * 1.2f
@@ -627,13 +833,11 @@ class GameSimulation(
             m.velocity = (m.velocity + thrust) * DRAG_COEFFICIENT
             m.position = m.position + (m.velocity * deltaTime)
 
-            // Seamless infinite ocean wrap (NO WALLS)
             m.position = Vector2(
                 wrapCoord(m.position.x, WORLD_WIDTH),
                 wrapCoord(m.position.y, WORLD_HEIGHT)
             )
 
-            // Microbe swimming water ripples
             if (distToPlayer < 850f && m.velocity.length() > 30f && (tickFrameCounter % 7 == 0)) {
                 rippleSystem.emitSwimRipple(
                     position = m.position,
@@ -679,12 +883,10 @@ class GameSimulation(
             chain.update(rootPos, player.angle, player.velocity, deltaTime, wavePulse)
         }
 
-        // Player jaw release & soft body update
         player.softBody.update(deltaTime)
         if (player.jawAperture < 1.0f) player.jawAperture += deltaTime * 3.5f
         if (player.mouthAnimationTimer <= 0f) player.isBiting = false
 
-        // Microbes appendages & soft body
         for (m in microbes) {
             m.softBody.update(deltaTime)
             if (m.jawAperture < 1.0f) m.jawAperture += deltaTime * 3.5f
@@ -723,40 +925,38 @@ class GameSimulation(
         }
     }
 
-    /**
-     * Anti-lag: Player-Food collision using Spatial Grid with toroidal wrapping.
-     */
-     private fun handlePlayerFoodCollisions() {
-         val playerRadius = calculatePlayerRadius()
-         var collectedAny = false
+    private fun handlePlayerFoodCollisions() {
+        val playerRadius = calculatePlayerRadius()
+        var collectedAny = false
 
-         foodGrid.forEachNeighbor(player.position.x, player.position.y) { food ->
-             if (!food.isCollected) {
-                 val dist = player.position.wrappedDistanceTo(food.position, WORLD_WIDTH, WORLD_HEIGHT)
-                 if (dist < playerRadius + food.radius) {
-                     if (TrophicWebRules.canConsumeFood(playerStats.dietType, food.kind)) {
-                         food.isCollected = true
-                         collectedAny = true
-                         player.dnaPoints += food.valueDna
-                         player.biomass += food.valueBiomass
-                         player.health = min(player.maxHealth, player.health + food.valueBiomass * 1.5f)
-                         onDnaCollected(food.valueDna)
-                         addNotice(food.position, "+${food.valueDna} ADN", food.color)
-                         onHapticImpact()
-                     }
-                 }
-             }
-         }
+        foodGrid.forEachNeighbor(player.position.x, player.position.y) { food ->
+            if (!food.isCollected) {
+                val dist = player.position.wrappedDistanceTo(food.position, WORLD_WIDTH, WORLD_HEIGHT)
+                if (dist < playerRadius + food.radius) {
+                    if (TrophicWebRules.canConsumeFood(playerStats.dietType, food.kind)) {
+                        food.isCollected = true
+                        collectedAny = true
+                        player.dnaPoints += food.valueDna
+                        val biomassGain = if (playerStats.activeChimericTraits.contains("TRAIT_HYBRID_METABOLISM")) food.valueBiomass * 1.5f else food.valueBiomass
+                        player.biomass += biomassGain
 
-         if (collectedAny) {
-             foods.removeAll { it.isCollected }
-             isFoodGridDirty = true
-         }
-     }
+                        val healMultiplier = if (playerStats.activeChimericTraits.contains("TRAIT_HERBI_REGEN")) 2.2f else 1.5f
+                        player.health = min(player.maxHealth, player.health + food.valueBiomass * healMultiplier)
 
-    /**
-     * Anti-lag: Player-Microbe collision using Spatial Grid with toroidal wrapping.
-     */
+                        onDnaCollected(food.valueDna)
+                        addNotice(food.position, "+${food.valueDna} ADN", food.color)
+                        onHapticImpact()
+                    }
+                }
+            }
+        }
+
+        if (collectedAny) {
+            foods.removeAll { it.isCollected }
+            isFoodGridDirty = true
+        }
+    }
+
     private fun handlePlayerMicrobeCollisions() {
         val playerRadius = calculatePlayerRadius()
 
@@ -769,13 +969,12 @@ class GameSimulation(
                     onSpeciesDiscovered(m.speciesId)
                 }
 
-                // Soft-body membrane collision impulse
                 val toMicrobe = player.position.wrappedDeltaTo(m.position, WORLD_WIDTH, WORLD_HEIGHT)
                 val hitAngle = toMicrobe.angle() - player.angle
                 player.softBody.applyImpact(hitAngle, impulse = 12f)
                 m.softBody.applyImpact(hitAngle + PI.toFloat(), impulse = 12f)
 
-                // 1. Spikes Collision (Causes deep local elastic membrane indentation)
+                // 1. Spikes Collision
                 if (playerStats.spikeDamage > 0f) {
                     val hitDmg = playerStats.spikeDamage * 0.6f
                     m.health -= hitDmg
@@ -786,20 +985,38 @@ class GameSimulation(
                     val enemySpikeDmg = m.spikesCount * 18f
                     player.softBody.applyImpact(hitAngle, impulse = 24f)
                     damagePlayer(enemySpikeDmg, "${m.name} (Púas)")
+                    // Chimeric reflective spikes: return 50% damage
+                    if (playerStats.hasReflectiveSpikes) {
+                        m.health -= enemySpikeDmg * 0.5f
+                        addNotice(m.position, "¡Reflejo! -${(enemySpikeDmg * 0.5f).toInt()}", Color(0xFF00E5FF))
+                    }
                 }
 
-                // 2. Predator & Prey interactions with articulated physical jaws
+                // 2. Predator & Prey interactions
                 val canPlayerEatMicrobe = TrophicWebRules.canPredatorAttack(playerStats.dietType, playerStats.trophicTier, playerRadius, m.trophicTier, m.radius)
                 val canMicrobeEatPlayer = TrophicWebRules.canPredatorAttack(m.diet, m.trophicTier, m.radius, playerStats.trophicTier, playerRadius)
 
                 if (canPlayerEatMicrobe) {
-                    val biteDmg = playerStats.biteDamage * 1.5f
+                    var biteDmg = playerStats.biteDamage * 1.5f
+                    // Chimeric Critical bite check
+                    if (playerStats.hasCriticalBite && Random.nextFloat() < 0.35f) {
+                        biteDmg *= 2.0f
+                        addNotice(m.position, "¡CRÍTICO! -${biteDmg.toInt()}", Color(0xFFFF1744))
+                    } else {
+                        addNotice(m.position, "Mordisco! -${biteDmg.toInt()}", Color(0xFFFF5252))
+                    }
                     m.health -= biteDmg
+
+                    // Chimeric Vampiric bite healing check
+                    if (playerStats.hasVampiricBite) {
+                        val vampHeal = biteDmg * 0.30f
+                        player.health = min(player.maxHealth, player.health + vampHeal)
+                    }
+
                     player.mouthAnimationTimer = 0.35f
                     player.isBiting = true
                     player.jawAperture = 0.05f
                     m.softBody.applyImpact(hitAngle + PI.toFloat(), impulse = 28f)
-                    addNotice(m.position, "Mordisco! -${biteDmg.toInt()}", Color(0xFFFF5252))
                     onHapticImpact()
                 }
 
@@ -815,9 +1032,14 @@ class GameSimulation(
                     }
                     player.softBody.applyImpact(hitAngle, impulse = 28f)
                     damagePlayer(incomingDmg, m.name)
+
+                    // Chimeric reflective spikes
+                    if (playerStats.hasReflectiveSpikes) {
+                        m.health -= incomingDmg * 0.5f
+                        addNotice(m.position, "¡Reflejo! -${(incomingDmg * 0.5f).toInt()}", Color(0xFF00E5FF))
+                    }
                 }
 
-                // Push
                 val overlap = combinedRadius - dist
                 val pushDir = m.position.wrappedDeltaTo(player.position, WORLD_WIDTH, WORLD_HEIGHT).normalized()
                 player.position = Vector2(
@@ -832,9 +1054,6 @@ class GameSimulation(
         }
     }
 
-    /**
-     * Anti-lag: Microbe vs Microbe interaction limited to immediate spatial neighbors.
-     */
     private fun handleMicrobeMicrobeCollisions() {
         for (i in 0 until microbes.size) {
             val a = microbes[i]
@@ -864,6 +1083,103 @@ class GameSimulation(
                             a.softBody.applyImpact(angleA, impulse = 22f)
                         }
                     }
+                }
+            }
+        }
+    }
+
+    private fun handlePlayerMeteorCollisions() {
+        val playerRadius = calculatePlayerRadius()
+        val meteorIter = meteorShards.iterator()
+
+        while (meteorIter.hasNext()) {
+            val meteor = meteorIter.next()
+            val dist = player.position.wrappedDistanceTo(meteor.position, WORLD_WIDTH, WORLD_HEIGHT)
+            val combined = playerRadius + meteor.radius
+
+            if (dist < combined) {
+                val hitAngle = player.position.wrappedDeltaTo(meteor.position, WORLD_WIDTH, WORLD_HEIGHT).angle() - player.angle
+                player.softBody.applyImpact(hitAngle, impulse = 18f)
+
+                // Damage calculation against the meteorite crust
+                val baseDmg = playerStats.biteDamage + (playerStats.spikeDamage * 0.8f) + 12f
+                val finalDmg = if (playerStats.activeChimericTraits.contains("TRAIT_DEMOLITION_RAM")) baseDmg * 2.8f else baseDmg
+
+                meteor.health -= finalDmg
+                onHapticImpact()
+                rippleSystem.emitDashShockwave(meteor.position, meteor.radius * 0.8f, meteor.coreColor)
+
+                if (meteor.health <= 0f) {
+                    SporeAudioEngine.playMeteorHit(shattered = true)
+                    meteorIter.remove()
+                    addNotice(meteor.position, "¡METEORITO DESTROZADO!", Color(0xFFFFD54F))
+
+                    // Drop contained part capsule
+                    partCapsules.add(
+                        PartCapsule(
+                            id = idGen.incrementAndGet(),
+                            position = meteor.position,
+                            partId = meteor.containedPartId,
+                            partName = meteor.partName,
+                            iconColor = Color(0xFFFFD54F)
+                        )
+                    )
+
+                    // Also drop bonus meat and DNA
+                    for (i in 0 until 2) {
+                        val offset = Vector2(Random.nextFloat() * 40f - 20f, Random.nextFloat() * 40f - 20f)
+                        foods.add(
+                            FoodParticle(
+                                id = idGen.incrementAndGet(),
+                                position = meteor.position + offset,
+                                kind = FoodKind.DNA_STRAND,
+                                radius = 12f,
+                                valueDna = 20,
+                                valueBiomass = 4.0f,
+                                color = Color(0xFFFFD600)
+                            )
+                        )
+                    }
+                    isFoodGridDirty = true
+                } else {
+                    SporeAudioEngine.playMeteorHit(shattered = false)
+                    addNotice(meteor.position, "Fractura -${finalDmg.toInt()}", Color(0xFFFFCC80))
+                }
+
+                // Bounce bounce
+                val pushDir = meteor.position.wrappedDeltaTo(player.position, WORLD_WIDTH, WORLD_HEIGHT).normalized()
+                player.velocity = pushDir * 120f
+            }
+        }
+    }
+
+    private fun handlePlayerCapsuleCollisions() {
+        val playerRadius = calculatePlayerRadius()
+        val capsuleIter = partCapsules.iterator()
+
+        while (capsuleIter.hasNext()) {
+            val cap = capsuleIter.next()
+            if (cap.isCollected) continue
+
+            val dist = player.position.wrappedDistanceTo(cap.position, WORLD_WIDTH, WORLD_HEIGHT)
+            if (dist < playerRadius + cap.radius) {
+                cap.isCollected = true
+                capsuleIter.remove()
+                onHapticImpact()
+
+                if (!unlockedPartsSet.contains(cap.partId)) {
+                    unlockedPartsSet.add(cap.partId)
+                    evolutionEntity = evolutionEntity.copy(unlockedParts = CellEvolutionConfig.formatUnlockedParts(unlockedPartsSet))
+                    player.dnaPoints += 35
+                    onDnaCollected(35)
+                    newlyDiscoveredPartEvent = cap.partName
+                    onPartUnlocked(cap.partId, cap.partName)
+                    SporeAudioEngine.playPartDiscovered()
+                    addNotice(player.position, "¡GENOMA ASIMILADO: ${cap.partName}! +35 ADN", Color(0xFFFFD600))
+                } else {
+                    player.dnaPoints += 15
+                    onDnaCollected(15)
+                    addNotice(player.position, "+15 ADN (Genoma Reciclado)", Color(0xFF80D8FF))
                 }
             }
         }
@@ -905,8 +1221,98 @@ class GameSimulation(
                 )
             )
         }
+
+        // Spore Trophy Part drop based on defeated prey species
+        val droppedPartId: String? = when {
+            m.speciesId == "predator_didinium" && (!unlockedPartsSet.contains("JET") || !unlockedPartsSet.contains("MOUTH_CARNIVORE")) -> {
+                if (!unlockedPartsSet.contains("JET")) "JET" else "MOUTH_CARNIVORE"
+            }
+            m.speciesId == "predator_spiketooth" && (!unlockedPartsSet.contains("SPIKES") || !unlockedPartsSet.contains("ARMOR")) -> {
+                if (!unlockedPartsSet.contains("SPIKES")) "SPIKES" else "ARMOR"
+            }
+            m.speciesId == "omnivore_amoeba" && !unlockedPartsSet.contains("MOUTH_OMNIVORE") -> "MOUTH_OMNIVORE"
+            m.speciesId == "apex_megacolossus" && (!unlockedPartsSet.contains("POISON") || !unlockedPartsSet.contains("ELECTRIC")) -> {
+                if (!unlockedPartsSet.contains("POISON")) "POISON" else "ELECTRIC"
+            }
+            Random.nextFloat() < 0.25f -> {
+                CellEvolutionConfig.ALL_PARTS.firstOrNull { !unlockedPartsSet.contains(it.id) }?.id
+            }
+            else -> null
+        }
+
+        if (droppedPartId != null) {
+            val partDef = CellEvolutionConfig.getPart(droppedPartId)
+            if (partDef != null) {
+                partCapsules.add(
+                    PartCapsule(
+                        id = idGen.incrementAndGet(),
+                        position = m.position,
+                        partId = partDef.id,
+                        partName = partDef.name,
+                        iconColor = Color(0xFFFFD54F)
+                    )
+                )
+                addNotice(m.position, "¡Órgano Fósil Expulsado!", Color(0xFFFFD54F))
+            }
+        }
+
         isFoodGridDirty = true
         addNotice(m.position, "¡${m.name} Devorado!", Color(0xFF00E5FF))
+    }
+
+    /**
+     * Iconic Spore Mating Call trigger.
+     */
+    fun triggerMatingCall(): Boolean {
+        if (isMatingDanceActive) return false
+
+        // Emit acoustic wave from player
+        acousticWaves.add(
+            AcousticWave(
+                id = idGen.incrementAndGet(),
+                origin = player.position,
+                color = Color(0xFFFF4081),
+                fromPlayer = true
+            )
+        )
+        SporeAudioEngine.playMatingCall()
+        isMatingCallActive = true
+
+        // Spawn or direct active mate
+        if (activeMate == null) {
+            val mateAngle = Random.nextFloat() * 2f * PI.toFloat()
+            val mateDist = 800f
+            val matePos = Vector2(
+                wrapCoord(player.position.x + cos(mateAngle) * mateDist, WORLD_WIDTH),
+                wrapCoord(player.position.y + sin(mateAngle) * mateDist, WORLD_HEIGHT)
+            )
+            activeMate = SymbioticMate(
+                id = idGen.incrementAndGet(),
+                position = matePos,
+                speciesName = evolutionEntity.speciesName,
+                radius = calculatePlayerRadius() * 0.95f,
+                primaryColor = Color(0xFFFF80AB),
+                mouthType = playerStats.dietType,
+                state = MateState.SWIMMING_TO_PLAYER,
+                sonarPulseTimer = 1.0f
+            )
+        } else {
+            activeMate!!.state = MateState.SWIMMING_TO_PLAYER
+        }
+
+        // Mate echoes response
+        acousticWaves.add(
+            AcousticWave(
+                id = idGen.incrementAndGet(),
+                origin = activeMate!!.position,
+                color = Color(0xFFFF80AB),
+                fromPlayer = false
+            )
+        )
+        SporeAudioEngine.playMateResponseEcho()
+        addNotice(player.position, "¡Llamada de Cortejo Emitida! ❤️", Color(0xFFFF4081))
+        onHapticImpact()
+        return true
     }
 
     fun triggerDash(): Boolean {
@@ -918,6 +1324,19 @@ class GameSimulation(
             player.velocity = player.velocity + dashBurst
             rippleSystem.emitDashShockwave(player.position, calculatePlayerRadius(), Color(planetDefinition.oceanRimColor))
             onHapticImpact()
+
+            // Chimeric Cavitation Shockwave
+            if (playerStats.hasShockwaveDash) {
+                microbeGrid.forEachNeighbor(player.position.x, player.position.y) { m ->
+                    val d = player.position.wrappedDistanceTo(m.position, WORLD_WIDTH, WORLD_HEIGHT)
+                    if (d < 180f) {
+                        m.health -= 35f
+                        val push = player.position.wrappedDeltaTo(m.position, WORLD_WIDTH, WORLD_HEIGHT).normalized()
+                        m.velocity = m.velocity + (push * 350f)
+                        addNotice(m.position, "¡Cavitación! -35", Color(0xFF00E5FF))
+                    }
+                }
+            }
             return true
         }
         return false
@@ -952,6 +1371,18 @@ class GameSimulation(
                 )
             )
             onHapticImpact()
+
+            // Chimeric Bio-Magnetic Shock: attracts all foods in vicinity
+            if (playerStats.hasBioMagneticShock) {
+                for (food in foods) {
+                    val d = player.position.wrappedDistanceTo(food.position, WORLD_WIDTH, WORLD_HEIGHT)
+                    if (d < 300f) {
+                        val pull = food.position.wrappedDeltaTo(player.position, WORLD_WIDTH, WORLD_HEIGHT).normalized()
+                        food.position = food.position + (pull * 240f)
+                    }
+                }
+                isFoodGridDirty = true
+            }
             return true
         }
         return false
@@ -994,6 +1425,119 @@ class GameSimulation(
         }
     }
 
+    private fun updateMeteorShards(deltaTime: Float) {
+        for (meteor in meteorShards) {
+            meteor.rotation += meteor.rotationSpeed * deltaTime
+            meteor.position = meteor.position + (meteor.velocity * deltaTime)
+            meteor.position = Vector2(
+                wrapCoord(meteor.position.x, WORLD_WIDTH),
+                wrapCoord(meteor.position.y, WORLD_HEIGHT)
+            )
+        }
+    }
+
+    private fun updatePartCapsules(deltaTime: Float) {
+        val iter = partCapsules.iterator()
+        while (iter.hasNext()) {
+            val cap = iter.next()
+            cap.lifeTimer -= deltaTime
+            cap.wobblePhase += deltaTime * 3f
+            cap.position = cap.position + (cap.velocity * deltaTime)
+            cap.position = Vector2(
+                wrapCoord(cap.position.x, WORLD_WIDTH),
+                wrapCoord(cap.position.y, WORLD_HEIGHT)
+            )
+            if (cap.lifeTimer <= 0f) iter.remove()
+        }
+    }
+
+    private fun updateAcousticWaves(deltaTime: Float) {
+        val iter = acousticWaves.iterator()
+        while (iter.hasNext()) {
+            val wave = iter.next()
+            wave.currentRadius += wave.speed * deltaTime
+            wave.alpha = (1f - (wave.currentRadius / wave.maxRadius)).coerceIn(0f, 1f)
+            if (wave.currentRadius >= wave.maxRadius) iter.remove()
+        }
+    }
+
+    private fun updateSymbioticMate(deltaTime: Float) {
+        val mate = activeMate ?: return
+        mate.wobbleTimer += deltaTime * 3f
+        mate.softBody.update(deltaTime)
+
+        if (mate.state == MateState.SWIMMING_TO_PLAYER) {
+            val toPlayer = mate.position.wrappedDeltaTo(player.position, WORLD_WIDTH, WORLD_HEIGHT)
+            val targetA = toPlayer.angle()
+            mate.angle += angleDifference(targetA, mate.angle) * min(1f, 3.5f * deltaTime)
+            mate.velocity = Vector2.fromAngle(mate.angle, 140f)
+            mate.position = mate.position + (mate.velocity * deltaTime)
+            mate.position = Vector2(
+                wrapCoord(mate.position.x, WORLD_WIDTH),
+                wrapCoord(mate.position.y, WORLD_HEIGHT)
+            )
+
+            mate.sonarPulseTimer -= deltaTime
+            if (mate.sonarPulseTimer <= 0f) {
+                mate.sonarPulseTimer = 2.8f
+                acousticWaves.add(
+                    AcousticWave(
+                        id = idGen.incrementAndGet(),
+                        origin = mate.position,
+                        color = Color(0xFFFF80AB),
+                        fromPlayer = false
+                    )
+                )
+            }
+
+            val dist = mate.position.wrappedDistanceTo(player.position, WORLD_WIDTH, WORLD_HEIGHT)
+            if (dist < calculatePlayerRadius() + mate.radius + 15f) {
+                mate.state = MateState.COURTSHIP_DANCE
+                isMatingDanceActive = true
+                matingDanceTimer = 0f
+                SporeAudioEngine.playCourtshipZygote()
+                addNotice(player.position, "¡Danza de Cortejo Simbiótico! 💕", Color(0xFFFF4081))
+                onHapticImpact()
+            }
+        }
+    }
+
+    private fun updateHeartBubbles(deltaTime: Float) {
+        val iter = heartBubbles.iterator()
+        while (iter.hasNext()) {
+            val h = iter.next()
+            h.lifeSeconds -= deltaTime
+            h.position = h.position + (h.velocity * deltaTime)
+            h.alpha = (h.lifeSeconds / 1.3f).coerceIn(0f, 1f)
+            if (h.lifeSeconds <= 0f) iter.remove()
+        }
+    }
+
+    private fun updateAbyssalCreatures(deltaTime: Float) {
+        for (abyss in abyssalCreatures) {
+            abyss.position = abyss.position + (abyss.velocity * deltaTime)
+            abyss.position = Vector2(
+                wrapCoord(abyss.position.x, WORLD_WIDTH),
+                wrapCoord(abyss.position.y, WORLD_HEIGHT)
+            )
+            if (Random.nextFloat() < 0.02f) {
+                abyss.angle += (Random.nextFloat() * 0.3f - 0.15f)
+                val speed = abyss.velocity.length()
+                abyss.velocity = Vector2.fromAngle(abyss.angle, speed)
+            }
+        }
+    }
+
+    private fun updateForegroundFloaters(deltaTime: Float) {
+        for (floater in foregroundFloaters) {
+            floater.position = floater.position + (floater.velocity * deltaTime)
+            floater.position = Vector2(
+                wrapCoord(floater.position.x, WORLD_WIDTH),
+                wrapCoord(floater.position.y, WORLD_HEIGHT)
+            )
+        }
+    }
+
     private fun updateAmbient(deltaTime: Float) {
         for (p in ambientParticles) {
             p.position = p.position + (p.velocity * deltaTime)
@@ -1022,13 +1566,26 @@ class GameSimulation(
         player.health = playerStats.maxHealth
         player.position = Vector2(WORLD_WIDTH / 2f, WORLD_HEIGHT / 2f)
         player.velocity = Vector2.ZERO
+        player.bankRoll = 0f
+        player.pitchAngle = 0f
+        player.elevationZ = 0f
+        activeMate = null
+        isMatingDanceActive = false
+        isMatingCallActive = false
+        matingDanceTimer = 0f
         foods.clear()
         microbes.clear()
+        meteorShards.clear()
+        partCapsules.clear()
+        acousticWaves.clear()
+        heartBubbles.clear()
         poisonPuddles.clear()
         electricBlasts.clear()
         rippleSystem.clear()
         discoveredSpecies.clear()
         isFoodGridDirty = true
+        seedAbyssalCreatures()
+        seedForegroundFloaters()
         spawnInitialEcosystem()
     }
 }

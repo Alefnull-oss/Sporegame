@@ -8,6 +8,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
 import com.example.spore.game.terrain.CoralStructure
 import com.example.spore.game.terrain.HydrothermalVent
 import com.example.spore.game.terrain.KelpPlant
@@ -476,5 +477,171 @@ object OceanVisualRenderer {
 
     private fun isInView(x: Float, y: Float, l: Float, r: Float, t: Float, b: Float): Boolean {
         return x in l..r && y in t..b
+    }
+
+    /**
+     * 2.5D Abyssal Layer: Renders massive shadowy primordial leviathans swimming
+     * in the deep dark ocean floor with slow parallax and depth blur.
+     */
+    fun drawAbyssalSilhouettes(
+        drawScope: DrawScope,
+        abyssalCreatures: List<com.example.spore.game.engine.AbyssalSilhouette>,
+        camX: Float,
+        camY: Float,
+        zoom: Float,
+        screenWidth: Float,
+        screenHeight: Float,
+        timeSeconds: Float,
+        deepWaterColor: Color
+    ) {
+        val darkAbyssTint = Color(
+            (deepWaterColor.red * 0.4f).coerceIn(0f, 1f),
+            (deepWaterColor.green * 0.4f).coerceIn(0f, 1f),
+            (deepWaterColor.blue * 0.4f).coerceIn(0f, 1f),
+            1f
+        )
+
+        for (abyss in abyssalCreatures) {
+            val parallax = abyss.parallaxFactor
+            val screenX = (abyss.position.x * zoom * parallax) + (camX * parallax) + screenWidth * (0.5f * (1f - parallax))
+            val screenY = (abyss.position.y * zoom * parallax) + (camY * parallax) + screenHeight * (0.5f * (1f - parallax))
+
+            val halfLen = abyss.length * zoom * parallax
+            if (screenX !in -halfLen..(screenWidth + halfLen) || screenY !in -halfLen..(screenHeight + halfLen)) continue
+
+            val center = Offset(screenX, screenY)
+            val angleDeg = Math.toDegrees(abyss.angle.toDouble()).toFloat()
+
+            drawScope.rotate(degrees = angleDeg, pivot = center) {
+                val segCount = abyss.segmentCount
+                val segLength = (halfLen * 2f) / segCount
+                val baseW = abyss.width * zoom * parallax
+
+                for (s in 0 until segCount) {
+                    val progress = s.toFloat() / segCount
+                    val wobble = sin(timeSeconds * abyss.tailWobbleSpeed + abyss.tailPhaseOffset + progress * 3.2f) * (baseW * 0.45f * progress)
+                    val segX = center.x - (halfLen - s * segLength)
+                    val segY = center.y + wobble
+                    val segW = baseW * (1.1f - progress * 0.65f)
+
+                    drawScope.drawOval(
+                        color = darkAbyssTint.copy(alpha = abyss.alpha * (1f - progress * 0.35f)),
+                        topLeft = Offset(segX - segW * 0.7f, segY - segW * 0.5f),
+                        size = Size(segW * 1.4f, segW)
+                    )
+
+                    if (s == 1 || s == 3) {
+                        val finSpan = segW * 1.3f
+                        drawScope.drawOval(
+                            color = darkAbyssTint.copy(alpha = abyss.alpha * 0.65f),
+                            topLeft = Offset(segX - segW * 0.4f, segY - finSpan),
+                            size = Size(segW * 0.8f, finSpan * 2f)
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * 2.5D Foreground Floaters: Renders out-of-focus bokeh bubbles, diatoms,
+     * and amoeba ghosts drifting close to the camera lens with fast 1.45x parallax.
+     */
+    fun drawForegroundFloaters(
+        drawScope: DrawScope,
+        floaters: List<com.example.spore.game.engine.ForegroundFloater>,
+        camX: Float,
+        camY: Float,
+        zoom: Float,
+        screenWidth: Float,
+        screenHeight: Float,
+        timeSeconds: Float
+    ) {
+        val parallax = 1.45f
+
+        for (floater in floaters) {
+            val screenX = (floater.position.x * zoom * parallax) + (camX * parallax) + screenWidth * (0.5f * (1f - parallax))
+            val screenY = (floater.position.y * zoom * parallax) + (camY * parallax) + screenHeight * (0.5f * (1f - parallax))
+
+            val r = (floater.radius * zoom * 1.3f).coerceAtLeast(4f)
+            if (screenX !in -r - 40f..(screenWidth + r + 40f) || screenY !in -r - 40f..(screenHeight + r + 40f)) continue
+
+            val center = Offset(screenX, screenY)
+            val wobble = sin(timeSeconds * 1.5f + floater.wobblePhase) * 2f
+
+            when (floater.floaterKind) {
+                0 -> {
+                    // Out-of-focus soft Bokeh droplet (blurred ring)
+                    drawScope.drawCircle(
+                        color = floater.color.copy(alpha = floater.alpha * 0.35f),
+                        radius = r + wobble,
+                        center = center
+                    )
+                    drawScope.drawCircle(
+                        color = Color.White.copy(alpha = floater.alpha * 0.65f),
+                        radius = (r + wobble) * 0.9f,
+                        center = center,
+                        style = Stroke(width = 2.5f)
+                    )
+                }
+                1 -> {
+                    // Amoeba ghost / micro-spore
+                    drawScope.drawOval(
+                        color = floater.color.copy(alpha = floater.alpha * 0.25f),
+                        topLeft = Offset(center.x - r * 1.3f, center.y - r * 0.8f),
+                        size = Size(r * 2.6f, r * 1.6f)
+                    )
+                    drawScope.drawCircle(
+                        color = Color.White.copy(alpha = floater.alpha * 0.45f),
+                        radius = r * 0.35f,
+                        center = center - Offset(r * 0.2f, 0f)
+                    )
+                }
+                else -> {
+                    // Diatom ring / silica shell
+                    drawScope.drawCircle(
+                        color = floater.color.copy(alpha = floater.alpha * 0.5f),
+                        radius = r,
+                        center = center,
+                        style = Stroke(width = 2f)
+                    )
+                    drawScope.drawCircle(
+                        color = Color.White.copy(alpha = floater.alpha * 0.35f),
+                        radius = r * 0.5f,
+                        center = center,
+                        style = Stroke(width = 1.2f)
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * 2.5D Microscope Vignette: Soft radial border darkening that replicates
+     * looking through a microscopic laboratory aperture into fluid 3D space.
+     */
+    fun drawMicroscopeVignette(
+        drawScope: DrawScope,
+        screenWidth: Float,
+        screenHeight: Float,
+        vignetteColor: Color = Color(0xFF010A14)
+    ) {
+        val center = Offset(screenWidth / 2f, screenHeight / 2f)
+        val radius = (screenWidth.coerceAtLeast(screenHeight)) * 0.72f
+
+        drawScope.drawRect(
+            brush = Brush.radialGradient(
+                colors = listOf(
+                    Color.Transparent,
+                    Color.Transparent,
+                    vignetteColor.copy(alpha = 0.35f),
+                    vignetteColor.copy(alpha = 0.78f)
+                ),
+                center = center,
+                radius = radius
+            ),
+            topLeft = Offset.Zero,
+            size = Size(screenWidth, screenHeight)
+        )
     }
 }

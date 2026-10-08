@@ -17,6 +17,7 @@ import com.example.spore.ui.screens.CellEditorScreen
 import com.example.spore.ui.screens.GalaxyMapScreen
 import com.example.spore.ui.screens.GameScreen
 import com.example.spore.ui.screens.MainMenuScreen
+import com.example.spore.ui.screens.PlanetCinematicScreen
 import com.example.spore.ui.screens.TrophicWebScreen
 import com.example.spore.ui.viewmodel.AppScreen
 import com.example.spore.ui.viewmodel.SporeViewModel
@@ -48,6 +49,7 @@ class MainActivity : ComponentActivity() {
                             AppScreen.GAME -> GameScreen(viewModel = viewModel)
                             AppScreen.CELL_EDITOR -> CellEditorScreen(viewModel = viewModel)
                             AppScreen.TROPHIC_WEB -> TrophicWebScreen(viewModel = viewModel)
+                            AppScreen.PLANET_CINEMATIC -> PlanetCinematicScreen(viewModel = viewModel)
                         }
                     }
                 }

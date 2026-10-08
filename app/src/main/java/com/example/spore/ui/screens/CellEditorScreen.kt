@@ -23,14 +23,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.FastForward
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Science
-import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Visibility
-import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -38,9 +36,6 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Surface
@@ -51,7 +46,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
@@ -67,7 +61,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.spore.game.engine.CellEvolutionConfig
-import com.example.spore.game.engine.DietType
+import com.example.spore.game.engine.GamePart
 import com.example.spore.game.engine.TrophicTier
 import com.example.spore.ui.components.CellVisualRenderer
 import com.example.spore.ui.viewmodel.AppScreen
@@ -84,9 +78,11 @@ fun CellEditorScreen(
 
     val draft by viewModel.editorDraft.collectAsStateWithLifecycle()
     val stats = remember(draft) { CellEvolutionConfig.calculateStats(draft) }
+    val unlockedParts = remember(draft.unlockedParts) { CellEvolutionConfig.parseUnlockedParts(draft.unlockedParts) }
+    val activeChimericTraits = remember(draft.chimericTraits) { CellEvolutionConfig.parseChimericTraits(draft.chimericTraits) }
 
     var selectedTab by remember { mutableIntStateOf(0) }
-    val tabTitles = listOf("Bocas (Dieta)", "Locomoción", "Ataque/Defensa", "Sentidos/Piel")
+    val tabTitles = listOf("Bocas (Dieta)", "Locomoción", "Ataque/Defensa", "Sentidos/Piel", "🧬 Quimerismo")
 
     var previewTime by remember { mutableFloatStateOf(0f) }
     LaunchedEffect(Unit) {
@@ -102,6 +98,9 @@ fun CellEditorScreen(
         topBar = {
             EditorTopBar(
                 dnaPoints = draft.dnaPoints,
+                generation = draft.generation,
+                unlockedCount = unlockedParts.size,
+                totalPartsCount = CellEvolutionConfig.ALL_PARTS.size,
                 onBack = { viewModel.navigateTo(AppScreen.GAME) },
                 onApply = { viewModel.saveAndApplyMutations() }
             )
@@ -116,14 +115,13 @@ fun CellEditorScreen(
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(210.dp)
-                    .padding(horizontal = 14.dp, vertical = 6.dp),
+                    .height(205.dp)
+                    .padding(horizontal = 14.dp, vertical = 4.dp),
                 shape = RoundedCornerShape(20.dp),
                 colors = CardDefaults.cardColors(containerColor = Color(0xFF0A182E)),
                 border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF1E3A5F))
             ) {
                 Box(modifier = Modifier.fillMaxSize()) {
-                    // Cell Preview Canvas
                     Canvas(modifier = Modifier.fillMaxSize()) {
                         val center = Offset(size.width / 2f, size.height / 2f)
                         CellVisualRenderer.drawCell(
@@ -139,7 +137,9 @@ fun CellEditorScreen(
                             hasPoison = draft.poisonGland,
                             hasElectric = draft.electricOrgan,
                             eyeType = draft.eyeType,
-                            timeSeconds = previewTime
+                            timeSeconds = previewTime,
+                            armorPlates = draft.armorPlates,
+                            drawShadow = true
                         )
                     }
 
@@ -167,15 +167,15 @@ fun CellEditorScreen(
                         )
                     }
 
-                    // Quick Species Renaming
+                    // Species Name & Generation
                     Text(
-                        text = "${draft.speciesName} (Gen ${draft.generation})",
+                        text = "${draft.speciesName} (Generación ${draft.generation})",
                         color = Color.White,
                         fontSize = 13.sp,
                         fontWeight = FontWeight.Bold,
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
-                            .padding(bottom = 8.dp)
+                            .padding(bottom = 6.dp)
                     )
                 }
             }
@@ -215,39 +215,58 @@ fun CellEditorScreen(
                 when (selectedTab) {
                     0 -> {
                         // Bocas & Dieta
+                        val herbiUnlocked = unlockedParts.contains("MOUTH_HERBIVORE")
+                        val carniUnlocked = unlockedParts.contains("MOUTH_CARNIVORE")
+                        val omniUnlocked = unlockedParts.contains("MOUTH_OMNIVORE")
+
                         item {
                             MouthSelectorItem(
                                 title = "Filtro Herbívoro",
-                                description = "Especializado en absorber fitoplancton y algas microscópicas. Rápida asimilación de nutrientes vegetales.",
+                                description = "Especializado en absorber fitoplancton y algas microscópicas. Rápida digestión de clorofila.",
                                 isSelected = draft.mouthType == "HERBIVORE",
+                                isUnlocked = herbiUnlocked,
                                 cost = CellEvolutionConfig.COST_MOUTH_CHANGE,
                                 canAfford = draft.dnaPoints >= CellEvolutionConfig.COST_MOUTH_CHANGE || draft.mouthType == "HERBIVORE",
                                 onSelect = { viewModel.setDraftMouth("HERBIVORE") }
                             )
                         }
                         item {
-                            MouthSelectorItem(
-                                title = "Mandíbula Carnívora",
-                                description = "Dientes y bordes afilados para desgarrar otros microbios y devorar carne orgánica. Permite cazar.",
-                                isSelected = draft.mouthType == "CARNIVORE",
-                                cost = CellEvolutionConfig.COST_MOUTH_CHANGE,
-                                canAfford = draft.dnaPoints >= CellEvolutionConfig.COST_MOUTH_CHANGE || draft.mouthType == "CARNIVORE",
-                                onSelect = { viewModel.setDraftMouth("CARNIVORE") }
-                            )
+                            if (carniUnlocked) {
+                                MouthSelectorItem(
+                                    title = "Mandíbula Carnívora",
+                                    description = "Dientes y bordes afilados para desgarrar otros microbios y devorar carne. Permite cazar.",
+                                    isSelected = draft.mouthType == "CARNIVORE",
+                                    isUnlocked = true,
+                                    cost = CellEvolutionConfig.COST_MOUTH_CHANGE,
+                                    canAfford = draft.dnaPoints >= CellEvolutionConfig.COST_MOUTH_CHANGE || draft.mouthType == "CARNIVORE",
+                                    onSelect = { viewModel.setDraftMouth("CARNIVORE") }
+                                )
+                            } else {
+                                LockedPartCard(partDef = CellEvolutionConfig.getPart("MOUTH_CARNIVORE")!!)
+                            }
                         }
                         item {
-                            MouthSelectorItem(
-                                title = "Probóscide Omnívora",
-                                description = "Tubo digestivo versátil. Puede sorber algas vegetales y restos de carne orgánica.",
-                                isSelected = draft.mouthType == "OMNIVORE",
-                                cost = CellEvolutionConfig.COST_MOUTH_CHANGE,
-                                canAfford = draft.dnaPoints >= CellEvolutionConfig.COST_MOUTH_CHANGE || draft.mouthType == "OMNIVORE",
-                                onSelect = { viewModel.setDraftMouth("OMNIVORE") }
-                            )
+                            if (omniUnlocked) {
+                                MouthSelectorItem(
+                                    title = "Probóscide Omnívora",
+                                    description = "Tubo digestivo versátil. Puede sorber algas vegetales y restos de carne orgánica.",
+                                    isSelected = draft.mouthType == "OMNIVORE",
+                                    isUnlocked = true,
+                                    cost = CellEvolutionConfig.COST_MOUTH_CHANGE,
+                                    canAfford = draft.dnaPoints >= CellEvolutionConfig.COST_MOUTH_CHANGE || draft.mouthType == "OMNIVORE",
+                                    onSelect = { viewModel.setDraftMouth("OMNIVORE") }
+                                )
+                            } else {
+                                LockedPartCard(partDef = CellEvolutionConfig.getPart("MOUTH_OMNIVORE")!!)
+                            }
                         }
                     }
                     1 -> {
-                        // Locomoción (Flagelos, Cilios, Sifón)
+                        // Locomoción
+                        val flagellaUnlocked = unlockedParts.contains("FLAGELLA")
+                        val ciliaUnlocked = unlockedParts.contains("CILIA")
+                        val jetUnlocked = unlockedParts.contains("JET")
+
                         item {
                             CounterPartItem(
                                 title = "Flagelos Ondulantes",
@@ -262,8 +281,8 @@ fun CellEditorScreen(
                         }
                         item {
                             CounterPartItem(
-                                title = "Cilios Periféricos",
-                                description = "Finos filamentos vibrantes alrededor de la membrana. Permiten giros inmediatos y maniobrabilidad. (+Agilidad)",
+                                title = "Corona de Cilios",
+                                description = "Finos filamentos vibrantes alrededor de la membrana. Permiten giros inmediatos. (+Agilidad)",
                                 count = draft.ciliaCount,
                                 maxCount = 4,
                                 cost = CellEvolutionConfig.COST_CILIA,
@@ -273,67 +292,94 @@ fun CellEditorScreen(
                             )
                         }
                         item {
-                            CounterPartItem(
-                                title = "Sifón a Chorro",
-                                description = "Órgano hidrodinámico que expulsa agua a presión. Desbloquea la habilidad activa de Impulso Turbo.",
-                                count = draft.jetCount,
-                                maxCount = 2,
-                                cost = CellEvolutionConfig.COST_JET,
-                                canAfford = draft.dnaPoints >= CellEvolutionConfig.COST_JET,
-                                onIncrement = { viewModel.upgradeJet() },
-                                onDecrement = { viewModel.downgradeJet() }
-                            )
+                            if (jetUnlocked) {
+                                CounterPartItem(
+                                    title = "Propulsor Hidráulico Jet",
+                                    description = "Órgano que expulsa agua a presión. Desbloquea la habilidad activa de Impulso Turbo.",
+                                    count = draft.jetCount,
+                                    maxCount = 2,
+                                    cost = CellEvolutionConfig.COST_JET,
+                                    canAfford = draft.dnaPoints >= CellEvolutionConfig.COST_JET,
+                                    onIncrement = { viewModel.upgradeJet() },
+                                    onDecrement = { viewModel.downgradeJet() }
+                                )
+                            } else {
+                                LockedPartCard(partDef = CellEvolutionConfig.getPart("JET")!!)
+                            }
                         }
                     }
                     2 -> {
-                        // Ataque / Defensa (Púas, Veneno, Electricidad, Blindaje)
+                        // Ataque / Defensa
+                        val spikesUnlocked = unlockedParts.contains("SPIKES")
+                        val poisonUnlocked = unlockedParts.contains("POISON")
+                        val electricUnlocked = unlockedParts.contains("ELECTRIC")
+                        val armorUnlocked = unlockedParts.contains("ARMOR")
+
                         item {
-                            CounterPartItem(
-                                title = "Púas Quitinosas",
-                                description = "Espinaspuntiagudas. Infligen daño por embestida a objetivos y defienden contra mordiscos frontales.",
-                                count = draft.spikesCount,
-                                maxCount = 4,
-                                cost = CellEvolutionConfig.COST_SPIKE,
-                                canAfford = draft.dnaPoints >= CellEvolutionConfig.COST_SPIKE,
-                                onIncrement = { viewModel.upgradeSpikes() },
-                                onDecrement = { viewModel.downgradeSpikes() }
-                            )
+                            if (spikesUnlocked) {
+                                CounterPartItem(
+                                    title = "Púas Quitinosas",
+                                    description = "Espolones punzantes. Infligen daño por embestida a objetivos y defienden de frente.",
+                                    count = draft.spikesCount,
+                                    maxCount = 4,
+                                    cost = CellEvolutionConfig.COST_SPIKE,
+                                    canAfford = draft.dnaPoints >= CellEvolutionConfig.COST_SPIKE,
+                                    onIncrement = { viewModel.upgradeSpikes() },
+                                    onDecrement = { viewModel.downgradeSpikes() }
+                                )
+                            } else {
+                                LockedPartCard(partDef = CellEvolutionConfig.getPart("SPIKES")!!)
+                            }
                         }
                         item {
-                            TogglePartItem(
-                                title = "Glándula de Veneno",
-                                description = "Segrega un rastro tóxico verde que envenena y ralentiza a los perseguidores.",
-                                isEnabled = draft.poisonGland,
-                                cost = CellEvolutionConfig.COST_POISON,
-                                canAfford = draft.dnaPoints >= CellEvolutionConfig.COST_POISON || draft.poisonGland,
-                                onToggle = { viewModel.togglePoison() }
-                            )
+                            if (poisonUnlocked) {
+                                TogglePartItem(
+                                    title = "Glándula de Veneno",
+                                    description = "Segrega un rastro tóxico verde que envenena y ralentiza a los perseguidores.",
+                                    isEnabled = draft.poisonGland,
+                                    cost = CellEvolutionConfig.COST_POISON,
+                                    canAfford = draft.dnaPoints >= CellEvolutionConfig.COST_POISON || draft.poisonGland,
+                                    onToggle = { viewModel.togglePoison() }
+                                )
+                            } else {
+                                LockedPartCard(partDef = CellEvolutionConfig.getPart("POISON")!!)
+                            }
                         }
                         item {
-                            TogglePartItem(
-                                title = "Órgano Eléctrico",
-                                description = "Nódulo bioluminiscente que descarga pulsos electromagnéticos defensivos para aturdir y repeler.",
-                                isEnabled = draft.electricOrgan,
-                                cost = CellEvolutionConfig.COST_ELECTRIC,
-                                canAfford = draft.dnaPoints >= CellEvolutionConfig.COST_ELECTRIC || draft.electricOrgan,
-                                onToggle = { viewModel.toggleElectric() }
-                            )
+                            if (electricUnlocked) {
+                                TogglePartItem(
+                                    title = "Órgano Bio-Eléctrico",
+                                    description = "Nódulo bioluminiscente que descarga pulsos electromagnéticos defensivos.",
+                                    isEnabled = draft.electricOrgan,
+                                    cost = CellEvolutionConfig.COST_ELECTRIC,
+                                    canAfford = draft.dnaPoints >= CellEvolutionConfig.COST_ELECTRIC || draft.electricOrgan,
+                                    onToggle = { viewModel.toggleElectric() }
+                                )
+                            } else {
+                                LockedPartCard(partDef = CellEvolutionConfig.getPart("ELECTRIC")!!)
+                            }
                         }
                         item {
-                            CounterPartItem(
-                                title = "Placas de Blindaje",
-                                description = "Membrana celular endurecida. Aumenta la salud y reduce el daño entrante, aunque añade peso.",
-                                count = draft.armorPlates,
-                                maxCount = 3,
-                                cost = CellEvolutionConfig.COST_ARMOR,
-                                canAfford = draft.dnaPoints >= CellEvolutionConfig.COST_ARMOR,
-                                onIncrement = { viewModel.upgradeArmor() },
-                                onDecrement = { viewModel.downgradeArmor() }
-                            )
+                            if (armorUnlocked) {
+                                CounterPartItem(
+                                    title = "Placas de Blindaje",
+                                    description = "Membrana celular endurecida. Aumenta la salud y reduce el daño entrante.",
+                                    count = draft.armorPlates,
+                                    maxCount = 3,
+                                    cost = CellEvolutionConfig.COST_ARMOR,
+                                    canAfford = draft.dnaPoints >= CellEvolutionConfig.COST_ARMOR,
+                                    onIncrement = { viewModel.upgradeArmor() },
+                                    onDecrement = { viewModel.downgradeArmor() }
+                                )
+                            } else {
+                                LockedPartCard(partDef = CellEvolutionConfig.getPart("ARMOR")!!)
+                            }
                         }
                     }
                     3 -> {
-                        // Sentidos y Bioluminiscencia
+                        // Sentidos y Piel
+                        val eyeCompoundUnlocked = unlockedParts.contains("EYE_COMPOUND")
+
                         item {
                             Card(
                                 colors = CardDefaults.cardColors(containerColor = Color(0xFF0F1E36)),
@@ -358,15 +404,26 @@ fun CellEditorScreen(
                                         fontSize = 12.sp
                                     )
                                     Spacer(modifier = Modifier.height(10.dp))
-                                    Button(
-                                        onClick = { viewModel.toggleEye() },
-                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E5FF)),
-                                        shape = RoundedCornerShape(10.dp),
-                                        modifier = Modifier.testTag("toggle_eye_button")
-                                    ) {
-                                        Icon(Icons.Default.Visibility, contentDescription = null, tint = Color.Black, modifier = Modifier.size(16.dp))
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text("Cambiar Ojo (${draft.eyeType})", color = Color.Black, fontWeight = FontWeight.Bold)
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Button(
+                                            onClick = { viewModel.toggleEye() },
+                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E5FF)),
+                                            shape = RoundedCornerShape(10.dp),
+                                            modifier = Modifier.testTag("toggle_eye_button")
+                                        ) {
+                                            Icon(Icons.Default.Visibility, contentDescription = null, tint = Color.Black, modifier = Modifier.size(16.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text("Cambiar Ojo (${draft.eyeType})", color = Color.Black, fontWeight = FontWeight.Bold)
+                                        }
+                                        if (!eyeCompoundUnlocked) {
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text(
+                                                text = "🔒 Ojo Compuesto bloqueado",
+                                                color = Color(0xFFFFD54F),
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -425,6 +482,55 @@ fun CellEditorScreen(
                             }
                         }
                     }
+                    4 -> {
+                        // Quimerismo Epigenético (The Original Twist)
+                        item {
+                            Card(
+                                colors = CardDefaults.cardColors(containerColor = Color(0xFF132338)),
+                                shape = RoundedCornerShape(16.dp),
+                                border = androidx.compose.foundation.BorderStroke(1.5.dp, Color(0xFF00E5FF)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.padding(14.dp)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Default.Psychology, contentDescription = null, tint = Color(0xFF00E5FF), modifier = Modifier.size(22.dp))
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(
+                                            text = "Genómica Quimérica Adaptativa",
+                                            color = Color.White,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            fontSize = 16.sp
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text(
+                                        text = "Cada parte asimilada en el océano posee mutágenos activos. Calibra la rama epigenética de cada órgano para moldear una criatura con ventajas biomoleculares únicas.",
+                                        color = Color(0xFFB0BEC5),
+                                        fontSize = 12.sp,
+                                        lineHeight = 16.sp
+                                    )
+                                }
+                            }
+                        }
+
+                        // For each unlocked part, render its Chimeric Trait choice
+                        CellEvolutionConfig.ALL_PARTS.forEach { part ->
+                            val isUnlocked = unlockedParts.contains(part.id)
+                            item(key = part.id) {
+                                if (isUnlocked) {
+                                    ChimericPartSpliceCard(
+                                        part = part,
+                                        activeTraitId = activeChimericTraits[part.id],
+                                        onSelectTrait = { traitId ->
+                                            viewModel.selectChimericTrait(part.id, traitId)
+                                        }
+                                    )
+                                } else {
+                                    LockedPartCard(partDef = part)
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -434,6 +540,9 @@ fun CellEditorScreen(
 @Composable
 private fun EditorTopBar(
     dnaPoints: Int,
+    generation: Int,
+    unlockedCount: Int,
+    totalPartsCount: Int,
     onBack: () -> Unit,
     onApply: () -> Unit
 ) {
@@ -441,64 +550,106 @@ private fun EditorTopBar(
         color = Color(0xFF071526),
         modifier = Modifier.fillMaxWidth()
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onBack, modifier = Modifier.testTag("back_from_editor")) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "Volver",
-                        tint = Color.White
-                    )
+        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onBack, modifier = Modifier.testTag("back_from_editor")) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Volver",
+                            tint = Color.White
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Column {
+                        Text(
+                            text = "Nido de Metamorfosis",
+                            color = Color.White,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 16.sp
+                        )
+                        Text(
+                            text = "Gen $generation -> Gen ${generation + 1}",
+                            color = Color(0xFF80D8FF),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
                 }
-                Spacer(modifier = Modifier.width(6.dp))
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .background(Color(0xFF0B192C), RoundedCornerShape(12.dp))
+                            .padding(horizontal = 10.dp, vertical = 6.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.AutoAwesome,
+                            contentDescription = "ADN",
+                            tint = Color(0xFFFFD600),
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "$dnaPoints ADN",
+                            color = Color(0xFFFFD600),
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.width(8.dp))
+
+                    Button(
+                        onClick = onApply,
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E5FF)),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.testTag("apply_mutations_button")
+                    ) {
+                        Icon(Icons.Default.Science, contentDescription = null, tint = Color.Black, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Reproducir", color = Color.Black, fontWeight = FontWeight.ExtraBold)
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            // Part Collection Progress
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
                 Text(
-                    text = "Laboratorio de ADN",
-                    color = Color.White,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 17.sp
+                    text = "Genomas asimilados: $unlockedCount / $totalPartsCount partes",
+                    color = Color(0xFFB0BEC5),
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Medium
+                )
+                Text(
+                    text = "${(unlockedCount.toFloat() / totalPartsCount * 100).toInt()}% descubierto",
+                    color = Color(0xFFFFD600),
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold
                 )
             }
-
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                // Current DNA
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier
-                        .background(Color(0xFF0B192C), RoundedCornerShape(12.dp))
-                        .padding(horizontal = 10.dp, vertical = 6.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.AutoAwesome,
-                        contentDescription = "ADN",
-                        tint = Color(0xFFFFD600),
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(
-                        text = "$dnaPoints ADN",
-                        color = Color(0xFFFFD600),
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp
-                    )
-                }
-
-                Spacer(modifier = Modifier.width(8.dp))
-
-                Button(
-                    onClick = onApply,
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E5FF)),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.testTag("apply_mutations_button")
-                ) {
-                    Text("Nadar", color = Color.Black, fontWeight = FontWeight.ExtraBold)
-                }
-            }
+            Spacer(modifier = Modifier.height(2.dp))
+            LinearProgressIndicator(
+                progress = { (unlockedCount.toFloat() / totalPartsCount).coerceIn(0f, 1f) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(4.dp)
+                    .clip(RoundedCornerShape(2.dp)),
+                color = Color(0xFFFFD600),
+                trackColor = Color(0xFF1E3A5F),
+                strokeCap = StrokeCap.Round
+            )
         }
     }
 }
@@ -536,10 +687,195 @@ private fun StatMetricItem(label: String, value: String) {
 }
 
 @Composable
+private fun LockedPartCard(partDef: GamePart) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF08121E)),
+        shape = RoundedCornerShape(14.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF263238)),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Surface(
+                color = Color(0xFF1C2735),
+                shape = CircleShape,
+                modifier = Modifier.size(38.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = Icons.Default.Lock,
+                        contentDescription = "Bloqueado",
+                        tint = Color(0xFFFFB74D),
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = partDef.name,
+                    color = Color(0xFFECEFF1),
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = "🔒 ${partDef.discoveryClue}",
+                    color = Color(0xFFFFB74D),
+                    fontSize = 11.sp,
+                    lineHeight = 15.sp
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChimericPartSpliceCard(
+    part: GamePart,
+    activeTraitId: String?,
+    onSelectTrait: (String) -> Unit
+) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF0D1B2E)),
+        shape = RoundedCornerShape(14.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF1E3A5F)),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = part.name,
+                    color = Color(0xFF80D8FF),
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 14.sp
+                )
+                Surface(
+                    color = Color(0xFF00E5FF).copy(alpha = 0.15f),
+                    shape = RoundedCornerShape(6.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF00E5FF).copy(alpha = 0.5f))
+                ) {
+                    Text(
+                        text = part.category.title.split(" ")[0],
+                        color = Color(0xFF00E5FF),
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Two selectable Chimeric Mutagens
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // Trait A
+                val isASelected = activeTraitId == part.traitA.id
+                Surface(
+                    color = if (isASelected) Color(0xFF00E5FF).copy(alpha = 0.2f) else Color(0xFF091422),
+                    shape = RoundedCornerShape(10.dp),
+                    border = androidx.compose.foundation.BorderStroke(
+                        width = if (isASelected) 1.8.dp else 1.dp,
+                        color = if (isASelected) Color(0xFF00E5FF) else Color(0xFF1E3A5F)
+                    ),
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable { onSelectTrait(part.traitA.id) }
+                ) {
+                    Column(modifier = Modifier.padding(10.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = part.traitA.name,
+                                color = if (isASelected) Color(0xFF00E5FF) else Color.White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp,
+                                modifier = Modifier.weight(1f)
+                            )
+                            if (isASelected) {
+                                Icon(Icons.Default.Check, contentDescription = null, tint = Color(0xFF00E5FF), modifier = Modifier.size(14.dp))
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = part.traitA.shortBonus,
+                            color = Color(0xFFFFD600),
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = part.traitA.description,
+                            color = Color(0xFFB0BEC5),
+                            fontSize = 10.sp,
+                            lineHeight = 13.sp
+                        )
+                    }
+                }
+
+                // Trait B
+                val isBSelected = activeTraitId == part.traitB.id
+                Surface(
+                    color = if (isBSelected) Color(0xFFFF80AB).copy(alpha = 0.2f) else Color(0xFF091422),
+                    shape = RoundedCornerShape(10.dp),
+                    border = androidx.compose.foundation.BorderStroke(
+                        width = if (isBSelected) 1.8.dp else 1.dp,
+                        color = if (isBSelected) Color(0xFFFF80AB) else Color(0xFF1E3A5F)
+                    ),
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable { onSelectTrait(part.traitB.id) }
+                ) {
+                    Column(modifier = Modifier.padding(10.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = part.traitB.name,
+                                color = if (isBSelected) Color(0xFFFF80AB) else Color.White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp,
+                                modifier = Modifier.weight(1f)
+                            )
+                            if (isBSelected) {
+                                Icon(Icons.Default.Check, contentDescription = null, tint = Color(0xFFFF80AB), modifier = Modifier.size(14.dp))
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = part.traitB.shortBonus,
+                            color = Color(0xFFFFD600),
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = part.traitB.description,
+                            color = Color(0xFFB0BEC5),
+                            fontSize = 10.sp,
+                            lineHeight = 13.sp
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun MouthSelectorItem(
     title: String,
     description: String,
     isSelected: Boolean,
+    isUnlocked: Boolean,
     cost: Int,
     canAfford: Boolean,
     onSelect: () -> Unit
@@ -552,7 +888,7 @@ private fun MouthSelectorItem(
         border = if (isSelected) androidx.compose.foundation.BorderStroke(2.dp, Color(0xFF00E5FF)) else null,
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onSelect() }
+            .clickable(enabled = isUnlocked) { onSelect() }
             .testTag("mouth_${title.take(6)}")
     ) {
         Row(

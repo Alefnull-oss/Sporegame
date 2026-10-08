@@ -29,7 +29,8 @@ enum class AppScreen {
     MAIN_MENU,
     GAME,
     CELL_EDITOR,
-    TROPHIC_WEB
+    TROPHIC_WEB,
+    PLANET_CINEMATIC
 }
 
 class SporeViewModel(application: Application) : AndroidViewModel(application) {
@@ -66,6 +67,9 @@ class SporeViewModel(application: Application) : AndroidViewModel(application) {
     private val _editorDraft = MutableStateFlow(CellEvolutionEntity())
     val editorDraft: StateFlow<CellEvolutionEntity> = _editorDraft.asStateFlow()
 
+    private val _newlyUnlockedPartNotice = MutableStateFlow<String?>(null)
+    val newlyUnlockedPartNotice: StateFlow<String?> = _newlyUnlockedPartNotice.asStateFlow()
+
     var gameSimulation: GameSimulation? = null
         private set
 
@@ -92,15 +96,25 @@ class SporeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun launchPlanet(planet: PlanetDefinition) {
+    fun launchPlanet(planet: PlanetDefinition, forceCinematic: Boolean = false) {
         selectPlanet(planet)
         viewModelScope.launch {
             val save = repository.getPlanetSaveSync(planet.id)
+            val isFirstTime = save == null || !save.hasPlayed
             if (save != null && !save.hasPlayed) {
                 repository.savePlanetSave(save.copy(hasPlayed = true))
             }
-            navigateTo(AppScreen.GAME)
+            if (forceCinematic || isFirstTime) {
+                navigateTo(AppScreen.PLANET_CINEMATIC)
+            } else {
+                navigateTo(AppScreen.GAME)
+            }
         }
+    }
+
+    fun playPlanetCinematic(planet: PlanetDefinition) {
+        selectPlanet(planet)
+        navigateTo(AppScreen.PLANET_CINEMATIC)
     }
 
     fun resetPlanet(planetId: String) {
@@ -121,6 +135,10 @@ class SporeViewModel(application: Application) : AndroidViewModel(application) {
             cellEvolution.value?.let { gameSimulation?.updateEvolutionConfig(it) }
         }
         _currentScreen.value = screen
+    }
+
+    fun dismissUnlockedPartNotice() {
+        _newlyUnlockedPartNotice.value = null
     }
 
     private var pendingDnaEarnings = 0
@@ -168,6 +186,25 @@ class SporeViewModel(application: Application) : AndroidViewModel(application) {
             },
             onHapticImpact = {
                 triggerHaptic()
+            },
+            onPartUnlocked = { partId, partName ->
+                _newlyUnlockedPartNotice.value = partName
+                viewModelScope.launch {
+                    val current = repository.getCellEvolutionSync()
+                    val unlocked = CellEvolutionConfig.parseUnlockedParts(current.unlockedParts).toMutableSet()
+                    unlocked.add(partId)
+                    val formatted = CellEvolutionConfig.formatUnlockedParts(unlocked)
+                    val updated = current.copy(unlockedParts = formatted)
+                    repository.saveCellEvolution(updated)
+                    _editorDraft.value = _editorDraft.value.copy(unlockedParts = formatted)
+                    val pSave = repository.getPlanetSaveSync(_selectedPlanet.value.id)
+                    if (pSave != null) {
+                        repository.savePlanetSave(pSave.copy(unlockedParts = formatted))
+                    }
+                }
+            },
+            onMatingDanceComplete = {
+                navigateTo(AppScreen.CELL_EDITOR)
             }
         )
     }
@@ -202,7 +239,7 @@ class SporeViewModel(application: Application) : AndroidViewModel(application) {
         } catch (_: Exception) {}
     }
 
-    // --- Cell Editor DNA Mutations ---
+    // --- Cell Editor DNA Mutations & Epigenetic Chimerism ---
 
     fun setDraftSpeciesName(name: String) {
         _editorDraft.value = _editorDraft.value.copy(speciesName = name)
@@ -212,9 +249,35 @@ class SporeViewModel(application: Application) : AndroidViewModel(application) {
         _editorDraft.value = _editorDraft.value.copy(primaryColorHex = colorHex)
     }
 
+    fun selectChimericTrait(partId: String, traitId: String) {
+        val current = _editorDraft.value
+        val map = CellEvolutionConfig.parseChimericTraits(current.chimericTraits).toMutableMap()
+        if (map[partId] == traitId) {
+            map.remove(partId) // Toggle off if desired, or keep selected
+        } else {
+            map[partId] = traitId
+        }
+        val formatted = CellEvolutionConfig.formatChimericTraits(map)
+        _editorDraft.value = current.copy(chimericTraits = formatted)
+        triggerHaptic(35)
+    }
+
     fun setDraftMouth(mouthType: String) {
         val current = _editorDraft.value
         if (current.mouthType == mouthType) return
+
+        val requiredPartId = when (mouthType) {
+            "HERBIVORE" -> "MOUTH_HERBIVORE"
+            "CARNIVORE" -> "MOUTH_CARNIVORE"
+            "OMNIVORE" -> "MOUTH_OMNIVORE"
+            else -> "MOUTH_HERBIVORE"
+        }
+
+        if (!CellEvolutionConfig.isPartUnlocked(requiredPartId, current.unlockedParts)) {
+            triggerHaptic(80)
+            return
+        }
+
         val cost = CellEvolutionConfig.COST_MOUTH_CHANGE
         if (current.dnaPoints >= cost) {
             _editorDraft.value = current.copy(
@@ -228,6 +291,7 @@ class SporeViewModel(application: Application) : AndroidViewModel(application) {
     fun upgradeFlagella() {
         val current = _editorDraft.value
         if (current.flagellaCount >= 4) return
+        if (!CellEvolutionConfig.isPartUnlocked("FLAGELLA", current.unlockedParts)) return
         val cost = CellEvolutionConfig.COST_FLAGELLUM
         if (current.dnaPoints >= cost) {
             _editorDraft.value = current.copy(
@@ -251,6 +315,7 @@ class SporeViewModel(application: Application) : AndroidViewModel(application) {
     fun upgradeCilia() {
         val current = _editorDraft.value
         if (current.ciliaCount >= 4) return
+        if (!CellEvolutionConfig.isPartUnlocked("CILIA", current.unlockedParts)) return
         val cost = CellEvolutionConfig.COST_CILIA
         if (current.dnaPoints >= cost) {
             _editorDraft.value = current.copy(
@@ -274,6 +339,10 @@ class SporeViewModel(application: Application) : AndroidViewModel(application) {
     fun upgradeJet() {
         val current = _editorDraft.value
         if (current.jetCount >= 2) return
+        if (!CellEvolutionConfig.isPartUnlocked("JET", current.unlockedParts)) {
+            triggerHaptic(80)
+            return
+        }
         val cost = CellEvolutionConfig.COST_JET
         if (current.dnaPoints >= cost) {
             _editorDraft.value = current.copy(
@@ -297,6 +366,10 @@ class SporeViewModel(application: Application) : AndroidViewModel(application) {
     fun upgradeSpikes() {
         val current = _editorDraft.value
         if (current.spikesCount >= 4) return
+        if (!CellEvolutionConfig.isPartUnlocked("SPIKES", current.unlockedParts)) {
+            triggerHaptic(80)
+            return
+        }
         val cost = CellEvolutionConfig.COST_SPIKE
         if (current.dnaPoints >= cost) {
             _editorDraft.value = current.copy(
@@ -325,6 +398,10 @@ class SporeViewModel(application: Application) : AndroidViewModel(application) {
                 dnaPoints = current.dnaPoints + CellEvolutionConfig.COST_POISON
             )
         } else {
+            if (!CellEvolutionConfig.isPartUnlocked("POISON", current.unlockedParts)) {
+                triggerHaptic(80)
+                return
+            }
             val cost = CellEvolutionConfig.COST_POISON
             if (current.dnaPoints >= cost) {
                 _editorDraft.value = current.copy(
@@ -344,6 +421,10 @@ class SporeViewModel(application: Application) : AndroidViewModel(application) {
                 dnaPoints = current.dnaPoints + CellEvolutionConfig.COST_ELECTRIC
             )
         } else {
+            if (!CellEvolutionConfig.isPartUnlocked("ELECTRIC", current.unlockedParts)) {
+                triggerHaptic(80)
+                return
+            }
             val cost = CellEvolutionConfig.COST_ELECTRIC
             if (current.dnaPoints >= cost) {
                 _editorDraft.value = current.copy(
@@ -358,6 +439,10 @@ class SporeViewModel(application: Application) : AndroidViewModel(application) {
     fun upgradeArmor() {
         val current = _editorDraft.value
         if (current.armorPlates >= 3) return
+        if (!CellEvolutionConfig.isPartUnlocked("ARMOR", current.unlockedParts)) {
+            triggerHaptic(80)
+            return
+        }
         val cost = CellEvolutionConfig.COST_ARMOR
         if (current.dnaPoints >= cost) {
             _editorDraft.value = current.copy(
@@ -380,9 +465,10 @@ class SporeViewModel(application: Application) : AndroidViewModel(application) {
 
     fun toggleEye() {
         val current = _editorDraft.value
+        val hasCompoundUnlocked = CellEvolutionConfig.isPartUnlocked("EYE_COMPOUND", current.unlockedParts)
         val nextEye = when (current.eyeType) {
             "NONE" -> "BASIC"
-            "BASIC" -> "COMPOUND"
+            "BASIC" -> if (hasCompoundUnlocked) "COMPOUND" else "NONE"
             else -> "NONE"
         }
         val cost = CellEvolutionConfig.COST_EYE_UPGRADE
@@ -400,7 +486,6 @@ class SporeViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val updated = _editorDraft.value.copy(generation = _editorDraft.value.generation + 1)
             repository.saveCellEvolution(updated)
-            // Also update active planet save file
             val pId = _selectedPlanet.value.id
             val pSave = repository.getPlanetSaveSync(pId)
             if (pSave != null) {
@@ -420,7 +505,9 @@ class SporeViewModel(application: Application) : AndroidViewModel(application) {
                         armorPlates = updated.armorPlates,
                         eyeType = updated.eyeType,
                         primaryColorHex = updated.primaryColorHex,
-                        hasPlayed = true
+                        hasPlayed = true,
+                        unlockedParts = updated.unlockedParts,
+                        chimericTraits = updated.chimericTraits
                     )
                 )
             }

@@ -135,7 +135,9 @@ data class PlanetSaveEntity(
     val primaryColorHex: Long = 0xFF00E5FF,
     val hasPlayed: Boolean = false,
     val bestScore: Int = 0,
-    val microbesEaten: Int = 0
+    val microbesEaten: Int = 0,
+    val unlockedParts: String = "MOUTH_HERBIVORE,FLAGELLA,CILIA,EYE_BASIC",
+    val chimericTraits: String = ""
 ) {
     fun toCellEvolutionEntity(): CellEvolutionEntity = CellEvolutionEntity(
         id = 1,
@@ -152,6 +154,8 @@ data class PlanetSaveEntity(
         electricOrgan = electricOrgan,
         armorPlates = armorPlates,
         eyeType = eyeType,
-        primaryColorHex = primaryColorHex
+        primaryColorHex = primaryColorHex,
+        unlockedParts = unlockedParts,
+        chimericTraits = chimericTraits
     )
 }

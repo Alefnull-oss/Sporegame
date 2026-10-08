@@ -33,10 +33,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.MenuBook
+import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Science
+import com.example.spore.cinematics.PlanetCinematicDefinition
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -462,7 +464,70 @@ fun GalaxyMapScreen(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Genesis Scientific Banner & Cinematic trigger
+                val cinematicDef = remember(selectedPlanet.id) {
+                    PlanetCinematicDefinition.getCinematicForPlanet(selectedPlanet.id)
+                }
+
+                Surface(
+                    color = Color(0xFF071B33),
+                    shape = RoundedCornerShape(12.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(selectedPlanet.atmosphereColorHex).copy(alpha = 0.5f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { viewModel.playPlanetCinematic(selectedPlanet) }
+                        .testTag("open_genesis_cinematic_card")
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 10.dp, vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                            Icon(
+                                imageVector = Icons.Default.Movie,
+                                contentDescription = null,
+                                tint = Color(selectedPlanet.atmosphereColorHex),
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column {
+                                Text(
+                                    text = "Génesis: ${cinematicDef.primaryTheory.take(35)}...",
+                                    color = Color.White,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1
+                                )
+                                Text(
+                                    text = "Ver cinemática científica del origen",
+                                    color = Color(selectedPlanet.atmosphereColorHex),
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
+                        Surface(
+                            color = Color(selectedPlanet.atmosphereColorHex).copy(alpha = 0.2f),
+                            shape = RoundedCornerShape(8.dp),
+                            border = androidx.compose.foundation.BorderStroke(0.8.dp, Color(selectedPlanet.atmosphereColorHex))
+                        ) {
+                            Text(
+                                text = "VER",
+                                color = Color(selectedPlanet.atmosphereColorHex),
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Black,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
 
                 // Launch & Editor Action Buttons
                 Row(

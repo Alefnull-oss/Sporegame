@@ -25,5 +25,8 @@ data class CellEvolutionEntity(
     val eyeType: String = "BASIC", // NONE, BASIC, COMPOUND
     // Aesthetics
     val primaryColorHex: Long = 0xFF00E5FF,
-    val membranePattern: String = "SMOOTH"
+    val membranePattern: String = "SMOOTH",
+    // Spore-like Part Discovery & Epigenetic Chimerism
+    val unlockedParts: String = "MOUTH_HERBIVORE,FLAGELLA,CILIA,EYE_BASIC",
+    val chimericTraits: String = ""
 )
