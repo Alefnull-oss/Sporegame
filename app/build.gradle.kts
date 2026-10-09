@@ -47,6 +47,7 @@ android {
     }
     debug { signingConfig = signingConfigs.getByName("debugConfig") }
   }
+
   compileOptions {
     sourceCompatibility = JavaVersion.VERSION_11
     targetCompatibility = JavaVersion.VERSION_11
@@ -71,6 +72,40 @@ secrets {
 }
 
 googleServices { missingGoogleServicesStrategy = MissingGoogleServicesStrategy.WARN }
+
+// ---------------------------------------------------------------------------
+// Build reproducibility: the debugConfig signing config references
+// ${rootDir}/debug.keystore, which is gitignored by design. Fresh clones would
+// fail to assemble the debug variant until the keystore is generated. This task
+// creates the standard Android debug keystore (well-known public credentials)
+// automatically before the first build.
+// ---------------------------------------------------------------------------
+val ensureDebugKeystore = tasks.register("ensureDebugKeystore", Exec::class) {
+  description = "Generates the gitignored debug.keystore with the standard Android debug credentials if it is missing."
+  val keystoreFile = rootProject.layout.projectDirectory.file("debug.keystore")
+  outputs.file(keystoreFile)
+  onlyIf { !keystoreFile.asFile.exists() }
+
+  val javaHome = System.getProperty("java.home")
+  val isWindows = System.getProperty("os.name").lowercase().contains("win")
+  val keytool = File(javaHome, "bin${File.separator}keytool" + if (isWindows) ".exe" else "")
+
+  commandLine(
+    keytool.absolutePath,
+    "-genkeypair",
+    "-v",
+    "-keystore", keystoreFile.asFile.absolutePath,
+    "-storepass", "android",
+    "-alias", "androiddebugkey",
+    "-keypass", "android",
+    "-keyalg", "RSA",
+    "-keysize", "2048",
+    "-validity", "10950",
+    "-dname", "CN=Android Debug,O=Android,C=US"
+  )
+}
+
+tasks.named("preBuild") { dependsOn(ensureDebugKeystore) }
 
 // Some unused dependencies are commented out below instead of being removed.
 // This makes it easy to add them back in the future if needed.
