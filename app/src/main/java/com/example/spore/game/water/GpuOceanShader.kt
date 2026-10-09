@@ -32,6 +32,7 @@ class GpuOceanShader {
             uniform float uTime;
             uniform float2 uCameraPos;
             uniform float uZoom;
+            uniform float uDetail;
             uniform float3 uDeepColor;
             uniform float3 uShallowColor;
             uniform float3 uCausticColor;
@@ -86,7 +87,21 @@ class GpuOceanShader {
 
                 // Perturb caustic sample coordinate using wave ripples (fluid refraction)
                 float2 causticCoord = worldPos + float2(totalRipple * 22.0, totalRipple * 22.0);
-                float caustics = causticPattern(causticCoord, uTime);
+
+                // Adaptive detail tiers driven by the PerformanceGovernor DRS:
+                // full quality keeps the 9-sample Voronoi caustics; mid detail uses a
+                // cheap animated wave approximation; low detail skips caustics entirely.
+                float caustics;
+                if (uDetail >= 0.85) {
+                    caustics = causticPattern(causticCoord, uTime);
+                } else if (uDetail >= 0.55) {
+                    float w = sin(causticCoord.x * 0.02 + uTime * 0.7)
+                            * sin(causticCoord.y * 0.02 + uTime * 0.9);
+                    caustics = clamp(w * 0.5 + 0.5, 0.0, 1.0);
+                    caustics = caustics * caustics * caustics * 1.6;
+                } else {
+                    caustics = 0.0;
+                }
 
                 // Water highlights & ripple crests tinted with the planetary caustic color
                 float3 waveCaustics = uCausticColor * caustics * 0.35;
@@ -101,6 +116,15 @@ class GpuOceanShader {
     private var runtimeShader: RuntimeShader? = null
     private val shaderPaint = Paint().apply { isAntiAlias = true }
     private var isShaderInitialized = false
+
+    // Cached vertical-gradient fallback brush for devices without AGSL (API < 33):
+    // rebuilt only when a quantized color channel changes (5 bits per channel), so the
+    // smooth biome color transitions do not allocate a new Brush every frame.
+    private var fallbackBrush: Brush? = null
+    private var fallbackKey: Long = -1L
+
+    private fun quantizeColorKey(c: Color): Int =
+        (((c.red * 31f).toInt() shl 10) or ((c.green * 31f).toInt() shl 5) or (c.blue * 31f).toInt()) and 0x7FFF
 
     init {
         initShaderIfSupported()
@@ -138,7 +162,8 @@ class GpuOceanShader {
         playerY: Float,
         playerRadius: Float,
         playerAmp: Float,
-        rippleSystem: WaterRippleSystem
+        rippleSystem: WaterRippleSystem,
+        detailScale: Float = 1f
     ) {
         val shader = runtimeShader
         if (isShaderInitialized && shader != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -147,6 +172,7 @@ class GpuOceanShader {
                 shader.setFloatUniform("uTime", timeSeconds)
                 shader.setFloatUniform("uCameraPos", camX, camY)
                 shader.setFloatUniform("uZoom", zoom)
+                shader.setFloatUniform("uDetail", detailScale)
                 shader.setFloatUniform("uDeepColor", deepColor.red, deepColor.green, deepColor.blue)
                 shader.setFloatUniform("uShallowColor", shallowColor.red, shallowColor.green, shallowColor.blue)
                 shader.setFloatUniform("uCausticColor", causticColor.red, causticColor.green, causticColor.blue)
@@ -190,9 +216,22 @@ class GpuOceanShader {
             }
         }
 
-        // Hardware-accelerated Skia Canvas fallback
+        // Hardware-accelerated Skia Canvas fallback (API < 33): cached vertical
+        // gradient from the lit surface to the depths instead of a flat rectangle.
+        val key = (quantizeColorKey(deepColor).toLong() shl 15) or quantizeColorKey(shallowColor).toLong()
+        var brush = fallbackBrush
+        if (brush == null || key != fallbackKey) {
+            brush = Brush.verticalGradient(
+                colors = listOf(shallowColor, deepColor),
+                startY = 0f,
+                endY = screenHeight
+            )
+            fallbackBrush = brush
+            fallbackKey = key
+        }
         drawScope.drawRect(
-            color = deepColor,
+            brush = brush,
+            topLeft = Offset.Zero,
             size = Size(screenWidth, screenHeight)
         )
     }

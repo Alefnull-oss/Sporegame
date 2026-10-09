@@ -86,6 +86,7 @@ import com.example.spore.ui.components.CellVisualRenderer
 import com.example.spore.ui.components.FastTextPainter
 import com.example.spore.ui.components.FoodVisualRenderer
 import com.example.spore.ui.components.OceanVisualRenderer
+import com.example.spore.ui.components.StrokeCache
 import com.example.spore.ui.viewmodel.AppScreen
 import com.example.spore.ui.viewmodel.SporeViewModel
 import kotlin.math.cos
@@ -235,7 +236,8 @@ fun GameScreen(
                 playerY = playerWorldPos.y,
                 playerRadius = playerRadius * 1.5f,
                 playerAmp = if (simulation.player.velocity.length() > 20f || simulation.player.isDashing) 0.85f else 0.25f,
-                rippleSystem = simulation.rippleSystem
+                rippleSystem = simulation.rippleSystem,
+                detailScale = detailScale
             )
 
             // Anti-Lag Frustum Culling Box in World Coordinates
@@ -339,7 +341,7 @@ fun GameScreen(
                         color = Color(0xFF00E5FF).copy(alpha = 0.50f),
                         radius = r,
                         center = Offset(screenX, screenY),
-                        style = Stroke(width = 5f * zoom)
+                        style = StrokeCache.plain(5f * zoom)
                     )
                 }
             }
@@ -635,7 +637,7 @@ fun GameScreen(
                     color = Color.White.copy(alpha = 0.15f),
                     radius = 55f,
                     center = touchOrigin,
-                    style = Stroke(width = 3.5f)
+                    style = StrokeCache.plain(3.5f)
                 )
                 val stickHead = touchOrigin + Offset(inputDirection.x * 38f, inputDirection.y * 38f)
                 drawCircle(

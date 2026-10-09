@@ -300,7 +300,7 @@ object CellVisualRenderer {
         drawScope.drawPath(
             path = pathBody,
             color = darkRimColor,
-            style = Stroke(width = 7.5f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+            style = StrokeCache.roundRound(7.5f)
         )
 
         // 2. Base plasticine mass
@@ -334,7 +334,7 @@ object CellVisualRenderer {
         drawScope.drawPath(
             path = pathGroove,
             color = darkRimColor.copy(alpha = 0.28f),
-            style = Stroke(width = 3.2f, cap = StrokeCap.Round)
+            style = StrokeCache.round(3.2f)
         )
 
         pathGroove.reset()
@@ -346,7 +346,7 @@ object CellVisualRenderer {
         drawScope.drawPath(
             path = pathGroove,
             color = warmClayColor.copy(alpha = 0.45f),
-            style = Stroke(width = 2.8f, cap = StrokeCap.Round)
+            style = StrokeCache.round(2.8f)
         )
 
         // 5. Glossy Plasticine Specular Sheen (Brillo de Plastilina fresca)
@@ -428,7 +428,7 @@ object CellVisualRenderer {
             pathArmor.addOval(Rect(left, top, left + plateWidth, top + plateHeight))
 
             // Dark cartoon rim
-            drawScope.drawPath(pathArmor, color = rimColor, style = Stroke(width = 5.5f))
+            drawScope.drawPath(pathArmor, color = rimColor, style = StrokeCache.plain(5.5f))
             // Clay carapace body
             drawScope.drawPath(pathArmor, color = plateColor, style = Fill)
 
@@ -440,7 +440,7 @@ object CellVisualRenderer {
                 useCenter = false,
                 topLeft = Offset(left + 2f, top + 2f),
                 size = Size(plateWidth - 4f, plateHeight - 4f),
-                style = Stroke(width = 3f)
+                style = StrokeCache.plain(3f)
             )
         }
     }
@@ -555,7 +555,7 @@ object CellVisualRenderer {
                 useCenter = false,
                 topLeft = eyePos - Offset(eyeR * 0.65f, eyeR * 0.65f),
                 size = Size(eyeR * 1.3f, eyeR * 1.3f),
-                style = Stroke(width = 3.5f)
+                style = StrokeCache.plain(3.5f)
             )
             return
         }
@@ -636,14 +636,14 @@ object CellVisualRenderer {
                     color = Color(0xFF1B5E20),
                     radius = lipR + 3.5f,
                     center = mouthPos,
-                    style = Stroke(width = 5.5f)
+                    style = StrokeCache.plain(5.5f)
                 )
                 // Bright green pliable clay lips
                 drawScope.drawCircle(
                     color = Color(0xFF00E676),
                     radius = lipR,
                     center = mouthPos,
-                    style = Stroke(width = 6.5f)
+                    style = StrokeCache.plain(6.5f)
                 )
                 // Dark inside suction void
                 drawScope.drawCircle(
@@ -689,8 +689,8 @@ object CellVisualRenderer {
                 )
 
                 // Dark jaw contours
-                drawScope.drawPath(pathJawUpper, color = Color(0xFF880E4F), style = Stroke(width = 6.5f, join = StrokeJoin.Round))
-                drawScope.drawPath(pathJawLower, color = Color(0xFF880E4F), style = Stroke(width = 6.5f, join = StrokeJoin.Round))
+                drawScope.drawPath(pathJawUpper, color = Color(0xFF880E4F), style = StrokeCache.joinRound(6.5f))
+                drawScope.drawPath(pathJawLower, color = Color(0xFF880E4F), style = StrokeCache.joinRound(6.5f))
 
                 // Bright cartoon gums
                 drawScope.drawPath(pathJawUpper, color = Color(0xFFFF1744), style = Fill)
@@ -769,7 +769,7 @@ object CellVisualRenderer {
         pathSpike.lineTo(pos.x + size * 0.6f, pos.y)
         pathSpike.close()
 
-        drawScope.drawPath(pathSpike, color = Color(0xFF263238), style = Stroke(width = 4.5f, join = StrokeJoin.Round))
+        drawScope.drawPath(pathSpike, color = Color(0xFF263238), style = StrokeCache.joinRound(4.5f))
         drawScope.drawPath(pathSpike, color = Color(0xFFFFFDE7), style = Fill)
         drawScope.drawCircle(color = Color.White, radius = size * 0.35f, center = pos)
     }
@@ -943,7 +943,7 @@ object CellVisualRenderer {
             pathSpike.close()
 
             // Dark outline
-            drawScope.drawPath(pathSpike, color = Color(0xFF263238), style = Stroke(width = 6.5f, join = StrokeJoin.Round))
+            drawScope.drawPath(pathSpike, color = Color(0xFF263238), style = StrokeCache.joinRound(6.5f))
             // Ivory clay horn mass
             drawScope.drawPath(pathSpike, color = Color(0xFFFFF9C4), style = Fill)
 

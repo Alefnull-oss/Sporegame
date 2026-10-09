@@ -10,6 +10,7 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Fill
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.drawscope.withTransform
 import com.example.spore.game.engine.AcousticWave
 import com.example.spore.game.engine.HeartBubble
 import com.example.spore.game.engine.MeteorShard
@@ -23,6 +24,110 @@ object SporeWorldVisualRenderer {
 
     private val rockPath = Path()
     private val heartPath = Path()
+
+    // ---------------------------------------------------------------------
+    // Cached UNIT radial gradients + canvas transforms: each gradient is built
+    // once (center = origin, radius = 1) and positioned via withTransform,
+    // eliminating per-frame Brush/List allocations while keeping identical
+    // on-screen geometry.
+    // ---------------------------------------------------------------------
+
+    private var meteorCoreBrush: Brush? = null
+    private var meteorCoreKey = Int.MIN_VALUE
+    private fun meteorCoreBrush(coreColor: Color): Brush {
+        val k = coreColor.hashCode()
+        var b = meteorCoreBrush
+        if (b == null || k != meteorCoreKey) {
+            b = Brush.radialGradient(
+                colors = listOf(Color.White, coreColor, Color.Transparent),
+                center = Offset.Zero,
+                radius = 1f
+            )
+            meteorCoreBrush = b
+            meteorCoreKey = k
+        }
+        return b
+    }
+
+    private var crustBrush: Brush? = null
+    private var crustKey = Long.MIN_VALUE
+    private fun meteorCrustBrush(coreColor: Color, crustedColor: Color, radiusPx: Float): Brush {
+        // Radius quantized to 4px steps (dynamic zoom changes it slowly with biomass).
+        // The brush is centered at the ORIGIN in unit space; the caller translates
+        // the canvas to the meteor center, so the gradient follows the shard.
+        val k = (crustedColor.hashCode().toLong() shl 12) or ((radiusPx / 4f).toLong() and 0xFFF)
+        var b = crustBrush
+        if (b == null || k != crustKey) {
+            b = Brush.radialGradient(
+                colors = listOf(
+                    coreColor.copy(alpha = 0.85f),
+                    crustedColor,
+                    Color(0xFF2E1C14)
+                ),
+                center = Offset.Zero,
+                radius = radiusPx
+            )
+            crustBrush = b
+            crustKey = k
+        }
+        return b
+    }
+
+    private var capsuleAuraBrush: Brush? = null
+    private var capsuleAuraKey = Int.MIN_VALUE
+    private fun capsuleAuraBrush(iconColor: Color): Brush {
+        val k = iconColor.hashCode()
+        var b = capsuleAuraBrush
+        if (b == null || k != capsuleAuraKey) {
+            b = Brush.radialGradient(
+                colors = listOf(
+                    iconColor.copy(alpha = 0.45f),
+                    iconColor.copy(alpha = 0.15f),
+                    Color.Transparent
+                ),
+                center = Offset.Zero,
+                radius = 1f
+            )
+            capsuleAuraBrush = b
+            capsuleAuraKey = k
+        }
+        return b
+    }
+
+    private var capsuleBodyBrush: Brush? = null
+    private var capsuleBodyKey = Int.MIN_VALUE
+    private fun capsuleBodyBrush(iconColor: Color): Brush {
+        val k = iconColor.hashCode()
+        var b = capsuleBodyBrush
+        if (b == null || k != capsuleBodyKey) {
+            b = Brush.radialGradient(
+                colors = listOf(
+                    Color.White,
+                    iconColor.copy(alpha = 0.85f),
+                    iconColor.copy(alpha = 0.4f)
+                ),
+                // Unit-space offset center (-0.25, -0.25), matching the previous
+                // center - Offset(0.25 * radius, 0.25 * radius) in screen space.
+                center = Offset(-0.25f, -0.25f),
+                radius = 1f
+            )
+            capsuleBodyBrush = b
+            capsuleBodyKey = k
+        }
+        return b
+    }
+
+    private val mateHaloBrush by lazy {
+        Brush.radialGradient(
+            colors = listOf(
+                Color(0xFFFF4081).copy(alpha = 0.35f),
+                Color(0xFFFF80AB).copy(alpha = 0.15f),
+                Color.Transparent
+            ),
+            center = Offset.Zero,
+            radius = 1f
+        )
+    }
 
     fun drawMeteorShard(
         drawScope: DrawScope,
@@ -49,56 +154,49 @@ object SporeWorldVisualRenderer {
                 center = center + Offset(drawRadius * 0.25f, drawRadius * 0.35f)
             )
 
-            // Outer crusted rock polygon
+            // Outer crusted rock polygon (built CENTER-RELATIVE so the cached
+            // origin-centered gradient brush follows the shard via translate)
             rockPath.reset()
             val points = 8
             val seed = (meteor.id % 100).toFloat()
             for (i in 0 until points) {
                 val angle = (i.toFloat() / points) * 2f * PI.toFloat()
                 val radiusWobble = drawRadius * (0.85f + 0.25f * sin(angle * 3f + seed))
-                val px = center.x + cos(angle) * radiusWobble
-                val py = center.y + sin(angle) * radiusWobble
+                val px = cos(angle) * radiusWobble
+                val py = sin(angle) * radiusWobble
                 if (i == 0) rockPath.moveTo(px, py) else rockPath.lineTo(px, py)
             }
             rockPath.close()
 
-            // Crusted mineral fill
-            this.drawPath(
-                path = rockPath,
-                brush = Brush.radialGradient(
-                    colors = listOf(
-                        meteor.coreColor.copy(alpha = 0.85f),
-                        meteor.crustedColor,
-                        Color(0xFF2E1C14)
-                    ),
-                    center = center,
-                    radius = drawRadius
-                ),
-                style = Fill
-            )
+            this.withTransform({ translate(center.x, center.y) }) {
+                // Crusted mineral fill (cached brush, rebuilt only when zoom crosses a 4px step)
+                drawPath(
+                    path = rockPath,
+                    brush = meteorCrustBrush(meteor.coreColor, meteor.crustedColor, drawRadius),
+                    style = Fill
+                )
 
-            // Crust edge stroke
-            this.drawPath(
-                path = rockPath,
-                color = Color(0xFF8D6E63),
-                style = Stroke(width = 2.5f * zoom)
-            )
+                // Crust edge stroke (pure translate does not distort stroke width)
+                drawPath(
+                    path = rockPath,
+                    color = Color(0xFF8D6E63),
+                    style = StrokeCache.plain(2.5f * zoom)
+                )
+            }
 
-            // Inner glowing genetic core / cracks
+            // Inner glowing genetic core / cracks (cached unit gradient + transform)
             val pulse = 0.8f + 0.2f * sin(timeSeconds * 4f + meteor.wobblePhase)
-            this.drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(
-                        Color.White,
-                        meteor.coreColor,
-                        Color.Transparent
-                    ),
-                    center = center,
-                    radius = drawRadius * 0.55f * pulse
-                ),
-                radius = drawRadius * 0.55f * pulse,
-                center = center
-            )
+            val coreR = drawRadius * 0.55f * pulse
+            this.withTransform({
+                translate(center.x, center.y)
+                scale(coreR, coreR)
+            }) {
+                drawCircle(
+                    brush = meteorCoreBrush(meteor.coreColor),
+                    radius = 1f,
+                    center = Offset.Zero
+                )
+            }
 
             // Health indicator if damaged
             if (meteor.health < meteor.maxHealth) {
@@ -110,7 +208,7 @@ object SporeWorldVisualRenderer {
                     useCenter = false,
                     topLeft = center - Offset(drawRadius * 1.3f, drawRadius * 1.3f),
                     size = Size(drawRadius * 2.6f, drawRadius * 2.6f),
-                    style = Stroke(width = 3f * zoom, cap = StrokeCap.Round)
+                    style = StrokeCache.round(3f * zoom)
                 )
             }
         }
@@ -135,52 +233,48 @@ object SporeWorldVisualRenderer {
         val pulse = 1f + 0.12f * sin(timeSeconds * 5f + capsule.wobblePhase)
         val rot = (timeSeconds * 45f) % 360f
 
-        // Outer beacon aura
-        drawScope.drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(
-                    capsule.iconColor.copy(alpha = 0.45f),
-                    capsule.iconColor.copy(alpha = 0.15f),
-                    Color.Transparent
-                ),
-                center = center,
-                radius = drawRadius * 2.5f * pulse
-            ),
-            radius = drawRadius * 2.5f * pulse,
-            center = center
-        )
+        // Outer beacon aura (cached unit gradient + transform)
+        val auraR = drawRadius * 2.5f * pulse
+        drawScope.withTransform({
+            translate(center.x, center.y)
+            scale(auraR, auraR)
+        }) {
+            drawCircle(
+                brush = capsuleAuraBrush(capsule.iconColor),
+                radius = 1f,
+                center = Offset.Zero
+            )
+        }
 
-        // Rotating DNA spark ring
+        // Rotating DNA spark ring (cached stroke + dash effect)
         drawScope.rotate(rot, center) {
             this.drawCircle(
                 color = capsule.iconColor.copy(alpha = 0.8f),
                 radius = drawRadius * 1.25f,
                 center = center,
-                style = Stroke(width = 2f * zoom, pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(12f * zoom, 8f * zoom)))
+                style = StrokeCache.plainDashed(2f * zoom, 12f * zoom, 8f * zoom)
             )
         }
 
-        // Inner translucent vesicle body
-        drawScope.drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(
-                    Color.White,
-                    capsule.iconColor.copy(alpha = 0.85f),
-                    capsule.iconColor.copy(alpha = 0.4f)
-                ),
-                center = center - Offset(drawRadius * 0.25f, drawRadius * 0.25f),
-                radius = drawRadius
-            ),
-            radius = drawRadius * pulse,
-            center = center
-        )
+        // Inner translucent vesicle body (cached unit gradient + transform;
+        // gradient radius = drawRadius, drawn circle radius = drawRadius * pulse)
+        drawScope.withTransform({
+            translate(center.x, center.y)
+            scale(drawRadius, drawRadius)
+        }) {
+            drawCircle(
+                brush = capsuleBodyBrush(capsule.iconColor),
+                radius = pulse,
+                center = Offset.Zero
+            )
+        }
 
         // Vesicle membrane rim
         drawScope.drawCircle(
             color = Color.White.copy(alpha = 0.85f),
             radius = drawRadius * pulse,
             center = center,
-            style = Stroke(width = 2.5f * zoom)
+            style = StrokeCache.plain(2.5f * zoom)
         )
 
         // Center Organ Core / Fossil icon badge
@@ -208,7 +302,7 @@ object SporeWorldVisualRenderer {
             color = wave.color.copy(alpha = alpha * 0.6f),
             radius = drawRadius,
             center = center,
-            style = Stroke(width = 3.5f * zoom)
+            style = StrokeCache.plain(3.5f * zoom)
         )
 
         if (drawRadius > 25f * zoom) {
@@ -216,7 +310,7 @@ object SporeWorldVisualRenderer {
                 color = wave.color.copy(alpha = alpha * 0.35f),
                 radius = drawRadius * 0.75f,
                 center = center,
-                style = Stroke(width = 2f * zoom)
+                style = StrokeCache.plain(2f * zoom)
             )
         }
 
@@ -225,7 +319,7 @@ object SporeWorldVisualRenderer {
                 color = wave.color.copy(alpha = alpha * 0.18f),
                 radius = drawRadius * 0.5f,
                 center = center,
-                style = Stroke(width = 1.5f * zoom)
+                style = StrokeCache.plain(1.5f * zoom)
             )
         }
     }
@@ -240,21 +334,19 @@ object SporeWorldVisualRenderer {
         val center = screenPos
         val radius = mate.radius * zoom
 
-        // Romantic Pheromone Halo
+        // Romantic Pheromone Halo (cached unit gradient + transform)
         val haloPulse = 1f + 0.15f * sin(timeSeconds * 6f)
-        drawScope.drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(
-                    Color(0xFFFF4081).copy(alpha = 0.35f),
-                    Color(0xFFFF80AB).copy(alpha = 0.15f),
-                    Color.Transparent
-                ),
-                center = center,
-                radius = radius * 2.2f * haloPulse
-            ),
-            radius = radius * 2.2f * haloPulse,
-            center = center
-        )
+        val haloR = radius * 2.2f * haloPulse
+        drawScope.withTransform({
+            translate(center.x, center.y)
+            scale(haloR, haloR)
+        }) {
+            drawCircle(
+                brush = mateHaloBrush,
+                radius = 1f,
+                center = Offset.Zero
+            )
+        }
 
         // Draw Cell Body with cute blushing color
         CellVisualRenderer.drawCell(
@@ -316,6 +408,6 @@ object SporeWorldVisualRenderer {
         heartPath.close()
 
         drawScope.drawPath(heartPath, color = color, style = Fill)
-        drawScope.drawPath(heartPath, color = Color.White.copy(alpha = color.alpha * 0.8f), style = Stroke(width = 1.2f))
+        drawScope.drawPath(heartPath, color = Color.White.copy(alpha = color.alpha * 0.8f), style = StrokeCache.plain(1.2f))
     }
 }

@@ -9,6 +9,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.drawscope.withTransform
 import com.example.spore.game.terrain.CoralStructure
 import com.example.spore.game.terrain.HydrothermalVent
 import com.example.spore.game.terrain.KelpPlant
@@ -27,6 +28,38 @@ import kotlin.math.sin
 object OceanVisualRenderer {
 
     private val kelpPath = Path()
+
+    // ---------------------------------------------------------------------
+    // Cached gradient brushes (rebuilt only when their inputs actually
+    // change) - eliminates per-frame Brush + List allocations.
+    // ---------------------------------------------------------------------
+
+    /** God-ray linear brushes keyed by quantized alpha (0.005 steps). */
+    private val sunbeamBrushes = android.util.SparseArray<Brush>()
+
+    /** Vignette brush keyed by (color, screen size) - stable within a session. */
+    private var vignetteBrush: Brush? = null
+    private var vignetteKey: Long = -1L
+
+    private fun sunbeamBrush(rayAlpha: Float, sunbeamColor: Color): Brush {
+        val q = (rayAlpha * 200f).toInt().coerceIn(1, 199)
+        val colorKey = (sunbeamColor.hashCode() and 0xFFFF)
+        val key = (colorKey shl 9) or q
+        var brush = sunbeamBrushes.get(key)
+        if (brush == null) {
+            brush = Brush.linearGradient(
+                colors = listOf(
+                    sunbeamColor.copy(alpha = rayAlpha),
+                    sunbeamColor.copy(alpha = rayAlpha * 0.35f),
+                    Color.Transparent
+                ),
+                start = Offset(0f, 0f),
+                end = Offset(180f, 1000f)
+            )
+            sunbeamBrushes.put(key, brush)
+        }
+        return brush
+    }
 
     /**
      * Renders the living ocean floor: sand/silt ridges, swaying kelp fronds,
@@ -140,7 +173,7 @@ object OceanVisualRenderer {
                 color = troughColor.copy(alpha = troughAlpha),
                 radius = (scaledRadius - scaledWidth * 0.5f).coerceAtLeast(1f),
                 center = screenPos,
-                style = Stroke(width = scaledWidth * 0.8f)
+                style = StrokeCache.plain(scaledWidth * 0.8f)
             )
 
             // Outer bright wave crest highlight (cresta iluminada)
@@ -148,7 +181,7 @@ object OceanVisualRenderer {
                 color = ripple.color.copy(alpha = crestAlpha),
                 radius = scaledRadius,
                 center = screenPos,
-                style = Stroke(width = scaledWidth)
+                style = StrokeCache.plain(scaledWidth)
             )
 
             // Sharp specular white reflection line on the wave crest
@@ -157,7 +190,7 @@ object OceanVisualRenderer {
                     color = Color.White.copy(alpha = (ripple.amplitude * 0.45f).coerceIn(0f, 0.7f)),
                     radius = scaledRadius,
                     center = screenPos,
-                    style = Stroke(width = (scaledWidth * 0.35f).coerceAtLeast(1.2f))
+                    style = StrokeCache.plain((scaledWidth * 0.35f).coerceAtLeast(1.2f))
                 )
             }
 
@@ -283,19 +316,20 @@ object OceanVisualRenderer {
                 val rayX = screenWidth * (0.15f + i * 0.25f) + sin(rayPhase) * 60f
                 val rayAlpha = (0.045f + sin(rayPhase * 1.5f) * 0.02f) * biome.causticsIntensity
 
-                drawScope.drawRect(
-                    brush = Brush.linearGradient(
-                        colors = listOf(
-                            sunbeamColor.copy(alpha = rayAlpha),
-                            sunbeamColor.copy(alpha = rayAlpha * 0.35f),
-                            Color.Transparent
-                        ),
-                        start = Offset(rayX, 0f),
-                        end = Offset(rayX + 180f, screenHeight)
-                    ),
-                    topLeft = Offset(rayX - 60f, 0f),
-                    size = Size(180f, screenHeight)
-                )
+                // Cached unit-space gradient + canvas transform: identical geometry to the
+                // previous per-frame Brush.radialGradient allocation (start=(rayX,0),
+                // end=(rayX+180,screenHeight), rect=(rayX-60,0,180,screenHeight)).
+                val brush = sunbeamBrush(rayAlpha, sunbeamColor)
+                drawScope.withTransform({
+                    translate(rayX, 0f)
+                    scale(1f, screenHeight / 1000f)
+                }) {
+                    drawRect(
+                        brush = brush,
+                        topLeft = Offset(-60f, 0f),
+                        size = Size(180f, 1000f)
+                    )
+                }
             }
         }
     }
@@ -379,7 +413,7 @@ object OceanVisualRenderer {
         drawScope.drawPath(
             path = kelpPath,
             color = kelp.frondColor.copy(alpha = 0.85f),
-            style = Stroke(width = (kelp.stalkWidth * zoom).coerceAtLeast(2f), cap = StrokeCap.Round)
+            style = StrokeCache.round((kelp.stalkWidth * zoom).coerceAtLeast(2f))
         )
 
         // Holdfast anchor rock
@@ -588,7 +622,7 @@ object OceanVisualRenderer {
                         color = Color.White.copy(alpha = floater.alpha * 0.65f),
                         radius = (r + wobble) * 0.9f,
                         center = center,
-                        style = Stroke(width = 2.5f)
+                        style = StrokeCache.plain(2.5f)
                     )
                 }
                 1 -> {
@@ -610,13 +644,13 @@ object OceanVisualRenderer {
                         color = floater.color.copy(alpha = floater.alpha * 0.5f),
                         radius = r,
                         center = center,
-                        style = Stroke(width = 2f)
+                        style = StrokeCache.plain(2f)
                     )
                     drawScope.drawCircle(
                         color = Color.White.copy(alpha = floater.alpha * 0.35f),
                         radius = r * 0.5f,
                         center = center,
-                        style = Stroke(width = 1.2f)
+                        style = StrokeCache.plain(1.2f)
                     )
                 }
             }
@@ -636,7 +670,12 @@ object OceanVisualRenderer {
         val center = Offset(screenWidth / 2f, screenHeight / 2f)
         val radius = (screenWidth.coerceAtLeast(screenHeight)) * 0.72f
 
-        drawScope.drawRect(
+        // Cached vignette brush: rebuilt only when color or screen size changes
+        // (stable within a session) instead of allocating every frame.
+        val key = (vignetteColor.hashCode().toLong() shl 24) or
+            (screenWidth.toInt().toLong() shl 12) or screenHeight.toInt().toLong()
+        var brush = vignetteBrush
+        if (brush == null || key != vignetteKey) {
             brush = Brush.radialGradient(
                 colors = listOf(
                     Color.Transparent,
@@ -646,7 +685,13 @@ object OceanVisualRenderer {
                 ),
                 center = center,
                 radius = radius
-            ),
+            )
+            vignetteBrush = brush
+            vignetteKey = key
+        }
+
+        drawScope.drawRect(
+            brush = brush,
             topLeft = Offset.Zero,
             size = Size(screenWidth, screenHeight)
         )
