@@ -56,6 +56,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -78,6 +79,9 @@ import com.example.spore.cinematics.PlanetCinematicDefinition
 import com.example.spore.data.model.CellEvolutionEntity
 import com.example.spore.ui.viewmodel.AppScreen
 import com.example.spore.ui.viewmodel.SporeViewModel
+
+/** Plain (non-Compose) animation clock: mutated at 60 fps, read only in draw phases. */
+private class CinematicClock { var seconds = 0f }
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -109,7 +113,12 @@ fun PlanetCinematicScreen(
     }
 
     var currentPhaseIndex by remember { mutableIntStateOf(0) }
-    var phaseTimerSeconds by remember { mutableFloatStateOf(0f) }
+    // Precise per-frame timer: plain holder (NOT Compose state) so updating it
+    // 60 times per second never invalidates the composition - it is read only
+    // inside the Canvas draw phase. The UI instead samples it at 5 Hz below.
+    val preciseClock = remember { CinematicClock() }
+    var frameTick by remember { mutableLongStateOf(0L) } // Canvas draw-phase invalidation
+    var phaseTimerSeconds by remember { mutableFloatStateOf(0f) } // UI sample (5 Hz)
     var isPlaying by remember { mutableStateOf(true) }
     var showCodexDialog by remember { mutableStateOf(false) }
 
@@ -120,9 +129,13 @@ fun PlanetCinematicScreen(
         audioSynth.updateParametersForStage(selectedPlanet.id, currentPhase.stage)
     }
 
-    // Playback frame loop
+    // Playback frame loop: 60 fps animation clock + 5 Hz UI sampling channel.
+    // Previously phaseTimerSeconds was Compose state mutated every frame, which
+    // recomposed the ENTIRE screen (header, narration card, buttons) 60 times
+    // per second during the cinematic.
     var lastNanoTime = 0L
     LaunchedEffect(isPlaying, currentPhaseIndex) {
+        var uiClockMs = 0f
         while (isPlaying) {
             withFrameNanos { nowNanos ->
                 if (lastNanoTime == 0L) {
@@ -130,24 +143,36 @@ fun PlanetCinematicScreen(
                 } else {
                     val dt = ((nowNanos - lastNanoTime) / 1_000_000_000f).coerceIn(0.005f, 0.05f)
                     lastNanoTime = nowNanos
-                    phaseTimerSeconds += dt
+                    preciseClock.seconds += dt
 
-                    if (phaseTimerSeconds >= currentPhase.durationSeconds) {
+                    if (preciseClock.seconds >= currentPhase.durationSeconds) {
                         if (currentPhaseIndex < cinematicDef.phases.size - 1) {
                             currentPhaseIndex++
+                            preciseClock.seconds = 0f
                             phaseTimerSeconds = 0f
                             viewModel.triggerHaptic(40)
                         } else {
                             // Reached the end of the cinematic: loop or pause at final awakening
-                            phaseTimerSeconds = currentPhase.durationSeconds
+                            preciseClock.seconds = currentPhase.durationSeconds
                             isPlaying = false
                         }
+                    }
+
+                    // Canvas redraw at full frame rate (draw-phase only invalidation)
+                    frameTick = nowNanos
+
+                    // Throttled UI refresh channel (5 Hz)
+                    uiClockMs += dt * 1000f
+                    if (uiClockMs >= 200f) {
+                        uiClockMs = 0f
+                        phaseTimerSeconds = preciseClock.seconds
                     }
                 }
             }
         }
     }
 
+    // UI-sampled progress (5 Hz) for texts, chips and the progress bar
     val phaseProgress = (phaseTimerSeconds / currentPhase.durationSeconds).coerceIn(0f, 1f)
 
     BoxWithConstraints(
@@ -170,6 +195,10 @@ fun PlanetCinematicScreen(
                     viewModel.triggerHaptic(20)
                 }
         ) {
+            @Suppress("UNUSED_VARIABLE")
+            val tick = frameTick // Bind to the 60 fps draw-phase clock
+            // Full-precision progress computed at draw time (never recomposes the UI)
+            val drawProgress = (preciseClock.seconds / currentPhase.durationSeconds).coerceIn(0f, 1f)
             CinematicVisualRenderer.renderCinematicFrame(
                 drawScope = this,
                 screenWidth = screenW,
@@ -177,8 +206,8 @@ fun PlanetCinematicScreen(
                 planet = selectedPlanet,
                 cinematicDef = cinematicDef,
                 currentPhaseIndex = currentPhaseIndex,
-                phaseProgress = phaseProgress,
-                totalElapsedTime = phaseTimerSeconds + (currentPhaseIndex * 10f),
+                phaseProgress = drawProgress,
+                totalElapsedTime = preciseClock.seconds + (currentPhaseIndex * 10f),
                 cellEvolution = activeCell
             )
         }
