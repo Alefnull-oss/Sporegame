@@ -87,19 +87,37 @@ class SporeViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val save = repository.getPlanetSaveSync(planet.id)
             if (save != null) {
-                val evolution = save.toCellEvolutionEntity()
-                _editorDraft.value = evolution
-                repository.saveCellEvolution(evolution)
-                gameSimulation?.setPlanet(planet)
-                gameSimulation?.updateEvolutionConfig(evolution)
+                applyPlanetSave(planet, save)
             }
         }
     }
 
+    /** Applies a loaded planet save to the editor draft and live simulation. */
+    private suspend fun applyPlanetSave(planet: PlanetDefinition, save: PlanetSaveEntity) {
+        val evolution = save.toCellEvolutionEntity()
+        _editorDraft.value = evolution
+        repository.saveCellEvolution(evolution)
+        gameSimulation?.setPlanet(planet)
+        gameSimulation?.updateEvolutionConfig(evolution)
+    }
+
+    /**
+     * Launches a planet with a SINGLE database read.
+     *
+     * Previously launchPlanet() called selectPlanet() (which launched its own
+     * coroutine that queried the planet save) and then launched a SECOND
+     * coroutine that queried the same save again - two Room queries and two
+     * coroutine allocations per launch, with the two async chains racing.
+     * The shared logic now lives in [applyPlanetSave] and the save row is read
+     * exactly once.
+     */
     fun launchPlanet(planet: PlanetDefinition, forceCinematic: Boolean = false) {
-        selectPlanet(planet)
+        _selectedPlanet.value = planet
         viewModelScope.launch {
             val save = repository.getPlanetSaveSync(planet.id)
+            if (save != null) {
+                applyPlanetSave(planet, save)
+            }
             val isFirstTime = save == null || !save.hasPlayed
             if (save != null && !save.hasPlayed) {
                 repository.savePlanetSave(save.copy(hasPlayed = true))
