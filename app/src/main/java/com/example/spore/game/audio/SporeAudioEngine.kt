@@ -3,9 +3,9 @@ package com.example.spore.game.audio
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
-import android.os.Build
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.PI
 import kotlin.math.sin
@@ -18,12 +18,101 @@ import kotlin.random.Random
  * - Meteorite mineral impact cracking & shattering
  * - Courtship dance cellular zygote chimes
  * 100% offline, zero external audio assets required.
+ *
+ * Anti-stutter hardening: every sound effect previously BUILT A NEW
+ * AudioTrack (AudioTrack.Builder + AudioAttributes.Builder + AudioFormat.Builder
+ * + native AudioFlinger round-trip) and RELEASED it after playback. AudioTrack
+ * construction is one of the most expensive Android media operations and was a
+ * visible frame spike source every time a sound triggered.
+ *
+ * This version keeps a small SELF-HEALING AudioTrack pool in MODE_STREAM:
+ * - Tracks are reused across sounds (config is identical for every effect).
+ * - A track is recycled only after a clean stop()/flush() and a healthy
+ *   STATE_INITIALIZED check; any exception or bad state releases the track and
+ *   removes it from the pool (the next request simply builds a fresh one).
+ * - The pool is bounded, so memory stays flat even during sound spam.
  */
 object SporeAudioEngine {
     private val scope = CoroutineScope(Dispatchers.Default)
     private const val SAMPLE_RATE = 22050
 
+    /** Maximum pooled tracks (there are 5 distinct effects; overlap is rare). */
+    private const val MAX_POOLED_TRACKS = 4
+
+    /** Minimum internal buffer for pooled stream tracks (avoids tiny buffers). */
+    private const val MIN_BUFFER_BYTES = 8192
+
     var isSoundEnabled: Boolean = true
+
+    private class PooledTrack(val track: AudioTrack, val capacityBytes: Int)
+
+    private val pool = ArrayDeque<PooledTrack>()
+
+    private fun createTrack(bufferBytes: Int): PooledTrack {
+        val capacity = bufferBytes.coerceAtLeast(MIN_BUFFER_BYTES)
+        val track = AudioTrack.Builder()
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_GAME)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build()
+            )
+            .setAudioFormat(
+                AudioFormat.Builder()
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .setSampleRate(SAMPLE_RATE)
+                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                    .build()
+            )
+            .setBufferSizeInBytes(capacity)
+            .setTransferMode(AudioTrack.MODE_STREAM)
+            .build()
+        return PooledTrack(track, capacity)
+    }
+
+    /** Pops a healthy pooled track with enough capacity, or builds a new one. */
+    private fun obtainTrack(minBytes: Int): PooledTrack {
+        synchronized(pool) {
+            val iter = pool.iterator()
+            while (iter.hasNext()) {
+                val p = iter.next()
+                if (p.capacityBytes >= minBytes) {
+                    iter.remove()
+                    return p
+                }
+            }
+        }
+        return createTrack(minBytes)
+    }
+
+    /**
+     * Returns a track to the pool after verifying it is still healthy.
+     * Self-healing: any failure releases the track instead of pooling it.
+     */
+    private fun recycleTrack(pooled: PooledTrack) {
+        val healthy = try {
+            pooled.track.pause()
+            pooled.track.flush()
+            pooled.track.state == AudioTrack.STATE_INITIALIZED
+        } catch (_: Throwable) {
+            false
+        }
+        if (!healthy) {
+            try { pooled.track.release() } catch (_: Throwable) {}
+            return
+        }
+        val accepted = synchronized(pool) {
+            if (pool.size < MAX_POOLED_TRACKS) {
+                pool.addFirst(pooled)
+                true
+            } else {
+                false
+            }
+        }
+        if (!accepted) {
+            try { pooled.track.release() } catch (_: Throwable) {}
+        }
+    }
 
     private fun playToneSequence(durationMs: Int, generator: (Float) -> Float) {
         if (!isSoundEnabled) return
@@ -38,43 +127,21 @@ object SporeAudioEngine {
                     buffer[i] = (sampleFloat * 32767f).toInt().toShort()
                 }
 
-                val audioTrack = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                    AudioTrack.Builder()
-                        .setAudioAttributes(
-                            AudioAttributes.Builder()
-                                .setUsage(AudioAttributes.USAGE_GAME)
-                                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                                .build()
-                        )
-                        .setAudioFormat(
-                            AudioFormat.Builder()
-                                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                                .setSampleRate(SAMPLE_RATE)
-                                .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                                .build()
-                        )
-                        .setBufferSizeInBytes(buffer.size * 2)
-                        .setTransferMode(AudioTrack.MODE_STATIC)
-                        .build()
-                } else {
-                    @Suppress("DEPRECATION")
-                    AudioTrack(
-                        android.media.AudioManager.STREAM_MUSIC,
-                        SAMPLE_RATE,
-                        AudioFormat.CHANNEL_OUT_MONO,
-                        AudioFormat.ENCODING_PCM_16BIT,
-                        buffer.size * 2,
-                        AudioTrack.MODE_STATIC
-                    )
+                val pooled = obtainTrack(buffer.size * 2)
+                try {
+                    // Stream mode: queue the whole clip into the internal buffer,
+                    // then drain it. write() with a large-enough buffer is non-blocking.
+                    pooled.track.write(buffer, 0, buffer.size)
+                    pooled.track.play()
+
+                    // Wait for playback to finish before recycling the track.
+                    delay(durationMs.toLong() + 120L)
+
+                    recycleTrack(pooled)
+                } catch (_: Throwable) {
+                    // Self-heal: the track is in an unexpected state - discard it.
+                    try { pooled.track.release() } catch (_: Throwable) {}
                 }
-
-                audioTrack.write(buffer, 0, buffer.size)
-                audioTrack.play()
-
-                // Release after playback finished
-                kotlinx.coroutines.delay(durationMs.toLong() + 100L)
-                audioTrack.stop()
-                audioTrack.release()
             } catch (_: Exception) {}
         }
     }

@@ -306,30 +306,55 @@ object CellEvolutionConfig {
 
     fun getPart(partId: String): GamePart? = ALL_PARTS.firstOrNull { it.id == partId }
 
+    // ---------------------------------------------------------------------
+    // Parse memoization: parseUnlockedParts / parseChimericTraits split and
+    // rebuild sets/maps on EVERY call, and these are invoked from recomposing
+    // screens (cell editor) and evolution updates repeatedly with the same
+    // raw string. The last input/output pair is cached, so repeated parses of
+    // an unchanged string are a single reference comparison.
+    // ---------------------------------------------------------------------
+    @Volatile private var lastUnlockedRaw: String? = null
+    @Volatile private var lastUnlockedSet: Set<String> = emptySet()
+
     fun parseUnlockedParts(raw: String?): Set<String> {
-        if (raw.isNullOrBlank()) {
-            return DEFAULT_UNLOCKED_PARTS.split(",").map { it.trim() }.toSet()
+        if (raw == lastUnlockedRaw) return lastUnlockedSet
+        val parsed = if (raw.isNullOrBlank()) {
+            DEFAULT_UNLOCKED_PARTS.split(",").map { it.trim() }.toSet()
+        } else {
+            val set = raw.split(",").map { it.trim() }.filter { it.isNotEmpty() }.toMutableSet()
+            // Always include basic parts
+            DEFAULT_UNLOCKED_PARTS.split(",").forEach { set.add(it.trim()) }
+            set
         }
-        val set = raw.split(",").map { it.trim() }.filter { it.isNotEmpty() }.toMutableSet()
-        // Always include basic parts
-        DEFAULT_UNLOCKED_PARTS.split(",").forEach { set.add(it.trim()) }
-        return set
+        lastUnlockedRaw = raw
+        lastUnlockedSet = parsed
+        return parsed
     }
 
     fun formatUnlockedParts(parts: Set<String>): String {
         return parts.joinToString(",")
     }
 
+    @Volatile private var lastTraitsRaw: String? = null
+    @Volatile private var lastTraitsMap: Map<String, String> = emptyMap()
+
     fun parseChimericTraits(raw: String?): Map<String, String> {
-        if (raw.isNullOrBlank()) return emptyMap()
-        val map = mutableMapOf<String, String>()
-        raw.split(";").forEach { pair ->
-            val tokens = pair.split(":")
-            if (tokens.size == 2) {
-                map[tokens[0].trim()] = tokens[1].trim()
+        if (raw == lastTraitsRaw) return lastTraitsMap
+        val parsed = if (raw.isNullOrBlank()) {
+            emptyMap()
+        } else {
+            val map = mutableMapOf<String, String>()
+            raw.split(";").forEach { pair ->
+                val tokens = pair.split(":")
+                if (tokens.size == 2) {
+                    map[tokens[0].trim()] = tokens[1].trim()
+                }
             }
+            map
         }
-        return map
+        lastTraitsRaw = raw
+        lastTraitsMap = parsed
+        return parsed
     }
 
     fun formatChimericTraits(traits: Map<String, String>): String {
