@@ -227,6 +227,8 @@ object OceanVisualRenderer {
 
     /**
      * Renders sunlight caustics and underwater atmospheric god rays matching the planet's palette.
+     * `detailScale` (from the PerformanceGovernor DRS) widens caustic spacing and disables
+     * god rays under load so full visual quality returns automatically when frames recover.
      */
     fun drawWaterCausticsAndSunbeams(
         drawScope: DrawScope,
@@ -238,12 +240,13 @@ object OceanVisualRenderer {
         timeSeconds: Float,
         biome: OceanBiomeType,
         causticColor: Color,
-        sunbeamColor: Color
+        sunbeamColor: Color,
+        detailScale: Float = 1f
     ) {
         if (biome.causticsIntensity <= 0.05f) return
 
-        // 1. Moving Caustics Mesh Lattice (colored per planet theme)
-        val causticSpacing = 160f * zoom
+        // 1. Moving Caustics Mesh Lattice (colored per planet theme; DRS widens spacing)
+        val causticSpacing = 160f * zoom * (1f + (1f - detailScale) * 1.4f)
         val startX = (camX % causticSpacing) - causticSpacing
         val startY = (camY % causticSpacing) - causticSpacing
         val alphaBase = 0.08f * biome.causticsIntensity
@@ -272,8 +275,8 @@ object OceanVisualRenderer {
             y += causticSpacing
         }
 
-        // 2. Underwater Sunbeams (God Rays)
-        if (biome == OceanBiomeType.SUNLIT_SHALLOWS || biome == OceanBiomeType.CORAL_REEF) {
+        // 2. Underwater Sunbeams (God Rays) - first visual feature disabled by DRS under load
+        if ((biome == OceanBiomeType.SUNLIT_SHALLOWS || biome == OceanBiomeType.CORAL_REEF) && detailScale >= 0.7f) {
             val rayCount = 4
             for (i in 0 until rayCount) {
                 val rayPhase = timeSeconds * 0.35f + (i * 1.6f)
@@ -546,6 +549,7 @@ object OceanVisualRenderer {
     /**
      * 2.5D Foreground Floaters: Renders out-of-focus bokeh bubbles, diatoms,
      * and amoeba ghosts drifting close to the camera lens with fast 1.45x parallax.
+     * DRS thins the floater count via an integer stride when the governor reduces detail.
      */
     fun drawForegroundFloaters(
         drawScope: DrawScope,
@@ -555,11 +559,14 @@ object OceanVisualRenderer {
         zoom: Float,
         screenWidth: Float,
         screenHeight: Float,
-        timeSeconds: Float
+        timeSeconds: Float,
+        detailScale: Float = 1f
     ) {
         val parallax = 1.45f
+        val stride = if (detailScale >= 0.85f) 1 else if (detailScale >= 0.55f) 2 else 3
 
-        for (floater in floaters) {
+        for (fi in 0 until floaters.size step stride) {
+            val floater = floaters[fi]
             val screenX = (floater.position.x * zoom * parallax) + (camX * parallax) + screenWidth * (0.5f * (1f - parallax))
             val screenY = (floater.position.y * zoom * parallax) + (camY * parallax) + screenHeight * (0.5f * (1f - parallax))
 

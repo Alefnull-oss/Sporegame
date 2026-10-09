@@ -76,6 +76,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.spore.data.model.PlanetDefinition
 import com.example.spore.game.engine.GameSimulation
+import com.example.spore.game.engine.PerformanceGovernor
 import com.example.spore.game.engine.TrophicTier
 import com.example.spore.game.engine.TrophicWebRules
 import com.example.spore.game.engine.Vector2
@@ -107,19 +108,52 @@ fun GameScreen(
     var joystickTouchOffset by remember { mutableStateOf<Offset?>(null) }
     var isPaused by remember { mutableStateOf(false) }
 
-    // Anti-lag smooth frame loop with capped delta time
+    // Adaptive performance governor: median-window stutter detection + 5-level DRS.
+    val perfGovernor = remember { PerformanceGovernor() }
+
+    // Anti-lag smooth frame loop with capped delta time and FIXED 60 Hz timestep accumulator:
+    // the simulation always advances in deterministic 1/60s steps regardless of the display
+    // refresh rate (60/90/120 Hz), while catch-up is capped at 3 steps to prevent death spirals.
     var frameTick by remember { mutableLongStateOf(0L) }
+    // 5 Hz HUD refresh channel: recomposes only the HUD 5 times per second (not 60),
+    // which also fixes frozen HUD values (health/DNA/biome/cooldowns read from the simulation).
+    var hudTick by remember { mutableLongStateOf(0L) }
     var lastNanoTime = 0L
     LaunchedEffect(isPaused) {
+        var accumulator = 0f
+        var hudClockMs = 0f
+        if (!isPaused) perfGovernor.reset()
         while (!isPaused) {
             withFrameNanos { nowNanos ->
                 if (lastNanoTime == 0L) {
                     lastNanoTime = nowNanos
                 } else {
-                    val dt = ((nowNanos - lastNanoTime) / 1_000_000_000f).coerceIn(0.005f, 0.033f)
+                    val rawDt = ((nowNanos - lastNanoTime) / 1_000_000_000f).coerceAtMost(0.25f)
                     lastNanoTime = nowNanos
-                    simulation.update(dt, inputDirection)
+
+                    // 1. Feed the raw frame delta to the adaptive DRS governor.
+                    perfGovernor.onFrame(rawDt)
+
+                    // 2. Fixed-timestep accumulator (deterministic 60 Hz simulation).
+                    accumulator += rawDt
+                    var steps = 0
+                    while (accumulator >= PerformanceGovernor.FIXED_DT && steps < 3) {
+                        simulation.update(PerformanceGovernor.FIXED_DT, inputDirection)
+                        accumulator -= PerformanceGovernor.FIXED_DT
+                        steps++
+                    }
+                    if (accumulator > PerformanceGovernor.FIXED_DT * 3f) {
+                        accumulator = 0f // Drop the backlog after a heavy stall instead of spiraling
+                    }
+
                     frameTick = nowNanos
+
+                    // 3. Throttled HUD channel (5 Hz).
+                    hudClockMs += rawDt * 1000f
+                    if (hudClockMs >= 200f) {
+                        hudClockMs = 0f
+                        hudTick++
+                    }
                 }
             }
         }
@@ -178,6 +212,7 @@ fun GameScreen(
         ) {
             @Suppress("UNUSED_VARIABLE")
             val tick = frameTick // Bind to Canvas draw phase for 60fps rendering without recomposing the UI tree
+            val detailScale = perfGovernor.detailScale // DRS visual density (1.0 = full quality)
 
             val playerWorldPos = simulation.player.position
             val camX = screenCenter.x - (playerWorldPos.x * zoom)
@@ -256,8 +291,10 @@ fun GameScreen(
                 troughColor = simulation.oceanTerrain.theme.wakeTroughColor
             )
 
-            // 3. Ambient Soup Particles (Seamless wrapped)
-            for (p in simulation.ambientParticles) {
+            // 3. Ambient Soup Particles (Seamless wrapped; DRS stride thins them under load)
+            val ambientStride = if (detailScale >= 0.85f) 1 else if (detailScale >= 0.55f) 2 else 3
+            for (ai in 0 until simulation.ambientParticles.size step ambientStride) {
+                val p = simulation.ambientParticles[ai]
                 val delta = playerWorldPos.wrappedDeltaTo(p.position, GameSimulation.WORLD_WIDTH, GameSimulation.WORLD_HEIGHT)
                 val screenX = screenCenter.x + delta.x * zoom
                 val screenY = screenCenter.y + delta.y * zoom
@@ -481,8 +518,10 @@ fun GameScreen(
                 drawShadow = true
             )
 
-            // 9. Sensory Radar / Peripheral Threat Warning (Wrapped delta)
+            // 9. Sensory Radar / Peripheral Threat Warning (Wrapped delta; DRS limits indicator count)
+            var radarBudget = if (detailScale >= 0.85f) Int.MAX_VALUE else if (detailScale >= 0.55f) 8 else 4
             for (m in simulation.microbes) {
+                if (radarBudget <= 0) break
                 val delta = playerWorldPos.wrappedDeltaTo(m.position, GameSimulation.WORLD_WIDTH, GameSimulation.WORLD_HEIGHT)
                 val dist = delta.length()
                 if (dist > playerRadius + 180f && dist < simulation.playerStats.sensorRadius) {
@@ -507,6 +546,7 @@ fun GameScreen(
                         radius = (if (m.trophicTier == TrophicTier.APEX) 9f else 6f) * zoom,
                         center = indicatorPos
                     )
+                    radarBudget--
                 }
             }
 
@@ -536,7 +576,7 @@ fun GameScreen(
                 }
             }
 
-            // 10. Water Surface Sun Caustics & Volumetric God Rays
+            // 10. Water Surface Sun Caustics & Volumetric God Rays (DRS-aware density)
             OceanVisualRenderer.drawWaterCausticsAndSunbeams(
                 drawScope = this,
                 screenWidth = screenWidth,
@@ -547,10 +587,11 @@ fun GameScreen(
                 timeSeconds = simulation.gameTimeSeconds,
                 biome = currentBiome,
                 causticColor = simulation.oceanTerrain.smoothedCausticColor,
-                sunbeamColor = simulation.oceanTerrain.theme.sunbeamColor
+                sunbeamColor = simulation.oceanTerrain.theme.sunbeamColor,
+                detailScale = detailScale
             )
 
-            // 10.5. 2.5D Foreground Floaters (Out-of-focus bokeh bubbles and diatoms with 1.45x fast parallax)
+            // 10.5. 2.5D Foreground Floaters (Out-of-focus bokeh bubbles and diatoms; DRS stride)
             OceanVisualRenderer.drawForegroundFloaters(
                 drawScope = this,
                 floaters = simulation.foregroundFloaters,
@@ -559,7 +600,8 @@ fun GameScreen(
                 zoom = zoom,
                 screenWidth = screenWidth,
                 screenHeight = screenHeight,
-                timeSeconds = simulation.gameTimeSeconds
+                timeSeconds = simulation.gameTimeSeconds,
+                detailScale = detailScale
             )
 
             // 10.8. 2.5D Microscope Laboratory Vignette
@@ -609,8 +651,9 @@ fun GameScreen(
             }
         }
 
-        // Top HUD Overlay
+        // Top HUD Overlay (refreshed by the 5 Hz hudTick channel)
         GameTopHud(
+            hudPulse = hudTick,
             simulation = simulation,
             planet = planet,
             onOpenGalaxy = {
@@ -635,8 +678,9 @@ fun GameScreen(
                 .padding(horizontal = 14.dp, vertical = 10.dp)
         )
 
-        // Bottom Action Controls (Turbo, Poison, Electric Shock)
+        // Bottom Action Controls (Turbo, Poison, Electric Shock; refreshed at 5 Hz)
         GameActionButtons(
+            hudPulse = hudTick,
             simulation = simulation,
             onTriggerDash = { simulation.triggerDash() },
             onTriggerPoison = { simulation.triggerPoison() },
@@ -669,7 +713,8 @@ fun GameScreen(
 
             Spacer(modifier = Modifier.width(8.dp))
 
-            // Anti-Lag active indicator badge
+            // Anti-Lag active indicator badge with live median FPS estimate
+            val liveFps = perfGovernor.fpsEstimate.toInt().coerceIn(0, 999)
             Surface(
                 color = Color(0xFF071526).copy(alpha = 0.75f),
                 shape = RoundedCornerShape(10.dp),
@@ -687,7 +732,7 @@ fun GameScreen(
                     )
                     Spacer(modifier = Modifier.width(4.dp))
                     Text(
-                        text = "Anti-Lag 60fps",
+                        text = "Anti-Lag ${liveFps}fps",
                         color = Color(0xFF80D8FF),
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold
@@ -735,6 +780,7 @@ fun GameScreen(
 
 @Composable
 private fun GameTopHud(
+    hudPulse: Long,
     simulation: GameSimulation,
     planet: PlanetDefinition,
     onOpenGalaxy: () -> Unit,
@@ -743,6 +789,7 @@ private fun GameTopHud(
     onOpenCinematic: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    @Suppress("UNUSED_PARAMETER") val pulse = hudPulse // 5 Hz recomposition driver for live simulation values
     Card(
         modifier = modifier,
         colors = CardDefaults.cardColors(containerColor = Color(0xDD071526)),
@@ -1168,12 +1215,14 @@ private fun CourtshipDanceOverlay(
 
 @Composable
 private fun GameActionButtons(
+    hudPulse: Long,
     simulation: GameSimulation,
     onTriggerDash: () -> Unit,
     onTriggerPoison: () -> Unit,
     onTriggerElectric: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    @Suppress("UNUSED_PARAMETER") val pulse = hudPulse // 5 Hz recomposition driver for cooldown states
     Column(
         modifier = modifier,
         horizontalAlignment = Alignment.End,
