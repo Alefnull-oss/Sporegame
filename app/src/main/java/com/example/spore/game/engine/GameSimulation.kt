@@ -105,6 +105,17 @@ class GameSimulation(
 
     private var tickFrameCounter: Int = 0
 
+    // ---------------------------------------------------------------------
+    // Zero-allocation scratch vectors for hot per-frame paths.
+    // The simulation runs on a single thread, so reusing these is safe and
+    // eliminates the ~300-600 Vector2 allocations per frame that triggered
+    // GC pauses (stutter) on low-RAM devices.
+    // ---------------------------------------------------------------------
+    private val scratchA = Vector2()
+    private val scratchB = Vector2()
+    private val scratchRoot = Vector2()
+    private val scratchFlow = Vector2()
+
     init {
         seedAmbientParticles()
         seedAbyssalCreatures()
@@ -522,13 +533,14 @@ class GameSimulation(
             }
         }
 
-        // 2. Food Magnet vortex ciliary effect
+        // 2. Food Magnet vortex ciliary effect (in-place pull, zero allocation)
         if (playerStats.hasFoodMagnet) {
             foodGrid.forEachNeighbor(player.position.x, player.position.y) { food ->
                 val d = player.position.wrappedDistanceTo(food.position, WORLD_WIDTH, WORLD_HEIGHT)
                 if (d < 190f && d > 12f) {
-                    val pullDir = food.position.wrappedDeltaTo(player.position, WORLD_WIDTH, WORLD_HEIGHT).normalized()
-                    food.position = food.position + (pullDir * (deltaTime * 190f))
+                    player.position.wrappedDeltaInto(food.position, WORLD_WIDTH, WORLD_HEIGHT, scratchA)
+                        .normalizeInPlace()
+                    food.position.addScaledInPlace(scratchA, deltaTime * 190f)
                     isFoodGridDirty = true
                 }
             }
@@ -601,10 +613,13 @@ class GameSimulation(
     }
 
     private fun updatePlayerMovement(deltaTime: Float, inputDirection: Vector2) {
-        val moveIntent = if (inputDirection.lengthSquared() > 0.04f) inputDirection.normalized() else Vector2.ZERO
+        // Zero-allocation movement integration (identical math to the previous
+        // immutable-operator version, minus the intermediate Vector2 objects).
+        val hasIntent = inputDirection.lengthSquared() > 0.04f
 
-        if (moveIntent.lengthSquared() > 0f) {
-            val targetAngle = moveIntent.angle()
+        if (hasIntent) {
+            scratchA.setFrom(inputDirection).normalizeInPlace() // moveIntent
+            val targetAngle = scratchA.angle()
             val diff = angleDifference(targetAngle, player.angle)
             player.angle += diff * min(1f, playerStats.turnRate * deltaTime)
 
@@ -612,27 +627,25 @@ class GameSimulation(
             player.bankRoll += (targetBank - player.bankRoll) * min(1f, deltaTime * 8f)
 
             val speedMult = if (player.isDashing) playerStats.dashSpeedMultiplier else 1f
-            val thrust = Vector2.fromAngle(player.angle, playerStats.baseSpeed * speedMult * deltaTime * 12f)
-            player.velocity = (player.velocity + thrust)
+            val thrustMag = playerStats.baseSpeed * speedMult * deltaTime * 12f
+            player.velocity.x += cos(player.angle) * thrustMag
+            player.velocity.y += sin(player.angle) * thrustMag
         } else {
             player.bankRoll += (0f - player.bankRoll) * min(1f, deltaTime * 5f)
         }
 
-        player.velocity = player.velocity * DRAG_COEFFICIENT
-        player.position = player.position + (player.velocity * deltaTime)
+        player.velocity.scaleInPlace(DRAG_COEFFICIENT)
+        player.position.addScaledInPlace(player.velocity, deltaTime)
 
         val speedMagnitude = player.velocity.length()
         val targetElevation = if (player.isDashing) 1.6f else (speedMagnitude / 180f).coerceIn(0f, 1.0f)
         player.elevationZ += (targetElevation - player.elevationZ) * min(1f, deltaTime * 7f)
         player.pitchAngle = (speedMagnitude / 300f).coerceIn(0f, 0.35f)
 
-        val currentFlow = oceanTerrain.getCurrentVelocityAt(player.position)
-        player.position = player.position + (currentFlow * (deltaTime * 0.25f))
+        oceanTerrain.getCurrentVelocityInto(player.position, scratchFlow)
+        player.position.addScaledInPlace(scratchFlow, deltaTime * 0.25f)
 
-        player.position = Vector2(
-            wrapCoord(player.position.x, WORLD_WIDTH),
-            wrapCoord(player.position.y, WORLD_HEIGHT)
-        )
+        player.position.wrapInPlace(WORLD_WIDTH, WORLD_HEIGHT)
     }
 
     private fun updateCourtshipDance(deltaTime: Float) {
@@ -644,11 +657,12 @@ class GameSimulation(
         val orbitRadius = (calculatePlayerRadius() + mate.radius) * 0.65f
         val orbitAngle = matingDanceTimer * 4.2f
 
-        player.position = Vector2(
+        // Zero-allocation orbital positions (same formulas as before)
+        player.position.set(
             wrapCoord(midX + cos(orbitAngle) * orbitRadius, WORLD_WIDTH),
             wrapCoord(midY + sin(orbitAngle) * orbitRadius, WORLD_HEIGHT)
         )
-        mate.position = Vector2(
+        mate.position.set(
             wrapCoord(midX - cos(orbitAngle) * orbitRadius, WORLD_WIDTH),
             wrapCoord(midY - sin(orbitAngle) * orbitRadius, WORLD_HEIGHT)
         )
@@ -696,7 +710,7 @@ class GameSimulation(
                     m.health -= p.damagePerSecond * deltaTime * 1.5f
                     // Chimeric perk: Paralyzing poison slows enemies by 50%
                     if (playerStats.hasParalyzingPoison) {
-                        m.velocity = m.velocity * 0.5f
+                        m.velocity.scaleInPlace(0.5f)
                     }
                 }
             }
@@ -713,8 +727,8 @@ class GameSimulation(
                 microbeGrid.forEachNeighbor(eb.position.x, eb.position.y) { m ->
                     if (eb.position.wrappedDistanceTo(m.position, WORLD_WIDTH, WORLD_HEIGHT) < eb.currentRadius + m.radius) {
                         m.health -= eb.damage * deltaTime * 3f
-                        val away = eb.position.wrappedDeltaTo(m.position, WORLD_WIDTH, WORLD_HEIGHT).normalized()
-                        m.velocity = m.velocity + (away * 400f)
+                        eb.position.wrappedDeltaInto(m.position, WORLD_WIDTH, WORLD_HEIGHT, scratchA).normalizeInPlace()
+                        m.velocity.addScaledInPlace(scratchA, 400f)
                     }
                 }
             }
@@ -745,11 +759,9 @@ class GameSimulation(
             val distToPlayer = m.position.wrappedDistanceTo(player.position, WORLD_WIDTH, WORLD_HEIGHT)
             val isFar = distToPlayer > 1400f
             if (isFar && (tickFrameCounter % 2 != 0)) {
-                m.position = m.position + (m.velocity * deltaTime)
-                m.position = Vector2(
-                    wrapCoord(m.position.x, WORLD_WIDTH),
-                    wrapCoord(m.position.y, WORLD_HEIGHT)
-                )
+                // Cheap far-field integration (in-place, zero allocation)
+                m.position.addScaledInPlace(m.velocity, deltaTime)
+                m.position.wrapInPlace(WORLD_WIDTH, WORLD_HEIGHT)
                 continue
             }
 
@@ -758,12 +770,14 @@ class GameSimulation(
 
             if (playerCanEatMe && distToPlayer < 400f) {
                 m.state = AiState.FLEEING
-                val toPlayer = m.position.wrappedDeltaTo(player.position, WORLD_WIDTH, WORLD_HEIGHT)
-                m.targetAngle = (-toPlayer).angle()
+                // scratchA = (m - player): direction AWAY from the player
+                player.position.wrappedDeltaInto(m.position, WORLD_WIDTH, WORLD_HEIGHT, scratchA)
+                m.targetAngle = kotlin.math.atan2(scratchA.y, scratchA.x)
             } else if (canEatPlayer && distToPlayer < 480f) {
                 m.state = AiState.HUNTING
-                val toPlayer = m.position.wrappedDeltaTo(player.position, WORLD_WIDTH, WORLD_HEIGHT)
-                m.targetAngle = toPlayer.angle()
+                // scratchA = (m - player): hunting aims at the player, i.e. -(scratchA)
+                player.position.wrappedDeltaInto(m.position, WORLD_WIDTH, WORLD_HEIGHT, scratchA)
+                m.targetAngle = kotlin.math.atan2(-scratchA.y, -scratchA.x)
                 if (m.hasPoison && m.poisonCooldown <= 0f && distToPlayer < 130f) {
                     m.poisonCooldown = 6f
                     poisonPuddles.add(PoisonPuddle(id = idGen.incrementAndGet(), position = m.position, fromPlayer = false))
@@ -783,7 +797,8 @@ class GameSimulation(
                         }
                     }
                     if (nearestFood != null) {
-                        m.targetAngle = m.position.wrappedDeltaTo(nearestFood!!.position, WORLD_WIDTH, WORLD_HEIGHT).angle()
+                        m.position.wrappedDeltaInto(nearestFood!!.position, WORLD_WIDTH, WORLD_HEIGHT, scratchA)
+                        m.targetAngle = kotlin.math.atan2(scratchA.y, scratchA.x)
                     } else if (Random.nextFloat() < 0.25f) {
                         m.targetAngle += (Random.nextFloat() * 1.5f - 0.75f)
                     }
@@ -804,7 +819,8 @@ class GameSimulation(
                     }
                     if (huntTarget != null) {
                         m.state = AiState.HUNTING
-                        m.targetAngle = m.position.wrappedDeltaTo(huntTarget!!.position, WORLD_WIDTH, WORLD_HEIGHT).angle()
+                        m.position.wrappedDeltaInto(huntTarget!!.position, WORLD_WIDTH, WORLD_HEIGHT, scratchA)
+                        m.targetAngle = kotlin.math.atan2(scratchA.y, scratchA.x)
                     } else {
                         m.state = AiState.ROAMING
                         m.targetAngle += (Random.nextFloat() * 2f - 1f)
@@ -829,14 +845,12 @@ class GameSimulation(
                 AiState.HUNTING -> m.targetSpeed * 1.2f
                 else -> m.targetSpeed * 0.85f
             }
-            val thrust = Vector2.fromAngle(m.angle, currentSpeed * deltaTime * 10f)
-            m.velocity = (m.velocity + thrust) * DRAG_COEFFICIENT
-            m.position = m.position + (m.velocity * deltaTime)
-
-            m.position = Vector2(
-                wrapCoord(m.position.x, WORLD_WIDTH),
-                wrapCoord(m.position.y, WORLD_HEIGHT)
-            )
+            // In-place thrust + drag integration (identical formulas)
+            val thrustMag = currentSpeed * deltaTime * 10f
+            m.velocity.x = (m.velocity.x + cos(m.angle) * thrustMag) * DRAG_COEFFICIENT
+            m.velocity.y = (m.velocity.y + sin(m.angle) * thrustMag) * DRAG_COEFFICIENT
+            m.position.addScaledInPlace(m.velocity, deltaTime)
+            m.position.wrapInPlace(WORLD_WIDTH, WORLD_HEIGHT)
 
             if (distToPlayer < 850f && m.velocity.length() > 30f && (tickFrameCounter % 7 == 0)) {
                 rippleSystem.emitSwimRipple(
@@ -875,12 +889,13 @@ class GameSimulation(
             val yOffset = pOffsets[i]
             val localX = -playerRadius * 0.88f
             val localY = playerRadius * yOffset
-            val rootPos = Vector2(
+            // Reused scratch root position: consumed synchronously by chain.update()
+            scratchRoot.set(
                 player.position.x + cosA * localX - sinA * localY,
                 player.position.y + sinA * localX + cosA * localY
             )
             val wavePulse = sin(gameTimeSeconds * (if (player.isDashing) 16f else 8.5f) + i * 1.4f) * (if (player.isDashing) 0.5f else 0.3f)
-            chain.update(rootPos, player.angle, player.velocity, deltaTime, wavePulse)
+            chain.update(scratchRoot, player.angle, player.velocity, deltaTime, wavePulse)
         }
 
         player.softBody.update(deltaTime)
@@ -914,12 +929,12 @@ class GameSimulation(
                     val yOffset = mOffsets[i]
                     val localX = -m.radius * 0.88f
                     val localY = m.radius * yOffset
-                    val rootPos = Vector2(
+                    scratchRoot.set(
                         m.position.x + mCos * localX - mSin * localY,
                         m.position.y + mSin * localX + mCos * localY
                     )
                     val wavePulse = sin(gameTimeSeconds * 8.5f + i * 1.4f) * 0.35f
-                    chain.update(rootPos, m.angle, m.velocity, deltaTime, wavePulse)
+                    chain.update(scratchRoot, m.angle, m.velocity, deltaTime, wavePulse)
                 }
             }
         }
@@ -969,7 +984,7 @@ class GameSimulation(
                     onSpeciesDiscovered(m.speciesId)
                 }
 
-                val toMicrobe = player.position.wrappedDeltaTo(m.position, WORLD_WIDTH, WORLD_HEIGHT)
+                val toMicrobe = player.position.wrappedDeltaInto(m.position, WORLD_WIDTH, WORLD_HEIGHT, scratchA)
                 val hitAngle = toMicrobe.angle() - player.angle
                 player.softBody.applyImpact(hitAngle, impulse = 12f)
                 m.softBody.applyImpact(hitAngle + PI.toFloat(), impulse = 12f)
@@ -1041,15 +1056,12 @@ class GameSimulation(
                 }
 
                 val overlap = combinedRadius - dist
-                val pushDir = m.position.wrappedDeltaTo(player.position, WORLD_WIDTH, WORLD_HEIGHT).normalized()
-                player.position = Vector2(
-                    wrapCoord(player.position.x + pushDir.x * (overlap * 0.5f), WORLD_WIDTH),
-                    wrapCoord(player.position.y + pushDir.y * (overlap * 0.5f), WORLD_HEIGHT)
-                )
-                m.position = Vector2(
-                    wrapCoord(m.position.x - pushDir.x * (overlap * 0.5f), WORLD_WIDTH),
-                    wrapCoord(m.position.y - pushDir.y * (overlap * 0.5f), WORLD_HEIGHT)
-                )
+                val pushDir = m.position.wrappedDeltaInto(player.position, WORLD_WIDTH, WORLD_HEIGHT, scratchB).normalizeInPlace()
+                player.position.addScaledInPlace(pushDir, overlap * 0.5f)
+                player.position.wrapInPlace(WORLD_WIDTH, WORLD_HEIGHT)
+                m.position.x -= pushDir.x * (overlap * 0.5f)
+                m.position.y -= pushDir.y * (overlap * 0.5f)
+                m.position.wrapInPlace(WORLD_WIDTH, WORLD_HEIGHT)
             }
         }
     }
@@ -1061,7 +1073,7 @@ class GameSimulation(
                 if (a.id < b.id) {
                     val dist = a.position.wrappedDistanceTo(b.position, WORLD_WIDTH, WORLD_HEIGHT)
                     if (dist < a.radius + b.radius) {
-                        val toB = a.position.wrappedDeltaTo(b.position, WORLD_WIDTH, WORLD_HEIGHT)
+                        val toB = a.position.wrappedDeltaInto(b.position, WORLD_WIDTH, WORLD_HEIGHT, scratchA)
                         val angleA = toB.angle() - a.angle
                         a.softBody.applyImpact(angleA, impulse = 10f)
                         b.softBody.applyImpact(angleA + PI.toFloat(), impulse = 10f)
@@ -1372,13 +1384,14 @@ class GameSimulation(
             )
             onHapticImpact()
 
-            // Chimeric Bio-Magnetic Shock: attracts all foods in vicinity
+            // Chimeric Bio-Magnetic Shock: attracts all foods in vicinity (zero-allocation)
             if (playerStats.hasBioMagneticShock) {
                 for (food in foods) {
                     val d = player.position.wrappedDistanceTo(food.position, WORLD_WIDTH, WORLD_HEIGHT)
                     if (d < 300f) {
-                        val pull = food.position.wrappedDeltaTo(player.position, WORLD_WIDTH, WORLD_HEIGHT).normalized()
-                        food.position = food.position + (pull * 240f)
+                        food.position.wrappedDeltaInto(player.position, WORLD_WIDTH, WORLD_HEIGHT, scratchA)
+                            .normalizeInPlace()
+                        food.position.addScaledInPlace(scratchA, 240f)
                     }
                 }
                 isFoodGridDirty = true
@@ -1419,7 +1432,7 @@ class GameSimulation(
         while (iter.hasNext()) {
             val n = iter.next()
             n.remainingSeconds -= deltaTime
-            n.position = n.position + Vector2(0f, -30f * deltaTime)
+            n.position.y -= 30f * deltaTime // identical to += Vector2(0, -30*dt), zero allocation
             n.alpha = (n.remainingSeconds / 1.2f).coerceIn(0f, 1f)
             if (n.remainingSeconds <= 0f) iter.remove()
         }
@@ -1428,11 +1441,8 @@ class GameSimulation(
     private fun updateMeteorShards(deltaTime: Float) {
         for (meteor in meteorShards) {
             meteor.rotation += meteor.rotationSpeed * deltaTime
-            meteor.position = meteor.position + (meteor.velocity * deltaTime)
-            meteor.position = Vector2(
-                wrapCoord(meteor.position.x, WORLD_WIDTH),
-                wrapCoord(meteor.position.y, WORLD_HEIGHT)
-            )
+            meteor.position.addScaledInPlace(meteor.velocity, deltaTime)
+            meteor.position.wrapInPlace(WORLD_WIDTH, WORLD_HEIGHT)
         }
     }
 
@@ -1442,11 +1452,8 @@ class GameSimulation(
             val cap = iter.next()
             cap.lifeTimer -= deltaTime
             cap.wobblePhase += deltaTime * 3f
-            cap.position = cap.position + (cap.velocity * deltaTime)
-            cap.position = Vector2(
-                wrapCoord(cap.position.x, WORLD_WIDTH),
-                wrapCoord(cap.position.y, WORLD_HEIGHT)
-            )
+            cap.position.addScaledInPlace(cap.velocity, deltaTime)
+            cap.position.wrapInPlace(WORLD_WIDTH, WORLD_HEIGHT)
             if (cap.lifeTimer <= 0f) iter.remove()
         }
     }
@@ -1467,15 +1474,12 @@ class GameSimulation(
         mate.softBody.update(deltaTime)
 
         if (mate.state == MateState.SWIMMING_TO_PLAYER) {
-            val toPlayer = mate.position.wrappedDeltaTo(player.position, WORLD_WIDTH, WORLD_HEIGHT)
+            val toPlayer = mate.position.wrappedDeltaInto(player.position, WORLD_WIDTH, WORLD_HEIGHT, scratchA)
             val targetA = toPlayer.angle()
             mate.angle += angleDifference(targetA, mate.angle) * min(1f, 3.5f * deltaTime)
-            mate.velocity = Vector2.fromAngle(mate.angle, 140f)
-            mate.position = mate.position + (mate.velocity * deltaTime)
-            mate.position = Vector2(
-                wrapCoord(mate.position.x, WORLD_WIDTH),
-                wrapCoord(mate.position.y, WORLD_HEIGHT)
-            )
+            mate.velocity.setFromAngle(mate.angle, 140f)
+            mate.position.addScaledInPlace(mate.velocity, deltaTime)
+            mate.position.wrapInPlace(WORLD_WIDTH, WORLD_HEIGHT)
 
             mate.sonarPulseTimer -= deltaTime
             if (mate.sonarPulseTimer <= 0f) {
@@ -1507,7 +1511,7 @@ class GameSimulation(
         while (iter.hasNext()) {
             val h = iter.next()
             h.lifeSeconds -= deltaTime
-            h.position = h.position + (h.velocity * deltaTime)
+            h.position.addScaledInPlace(h.velocity, deltaTime)
             h.alpha = (h.lifeSeconds / 1.3f).coerceIn(0f, 1f)
             if (h.lifeSeconds <= 0f) iter.remove()
         }
@@ -1515,36 +1519,27 @@ class GameSimulation(
 
     private fun updateAbyssalCreatures(deltaTime: Float) {
         for (abyss in abyssalCreatures) {
-            abyss.position = abyss.position + (abyss.velocity * deltaTime)
-            abyss.position = Vector2(
-                wrapCoord(abyss.position.x, WORLD_WIDTH),
-                wrapCoord(abyss.position.y, WORLD_HEIGHT)
-            )
+            abyss.position.addScaledInPlace(abyss.velocity, deltaTime)
+            abyss.position.wrapInPlace(WORLD_WIDTH, WORLD_HEIGHT)
             if (Random.nextFloat() < 0.02f) {
                 abyss.angle += (Random.nextFloat() * 0.3f - 0.15f)
                 val speed = abyss.velocity.length()
-                abyss.velocity = Vector2.fromAngle(abyss.angle, speed)
+                abyss.velocity.setFromAngle(abyss.angle, speed)
             }
         }
     }
 
     private fun updateForegroundFloaters(deltaTime: Float) {
         for (floater in foregroundFloaters) {
-            floater.position = floater.position + (floater.velocity * deltaTime)
-            floater.position = Vector2(
-                wrapCoord(floater.position.x, WORLD_WIDTH),
-                wrapCoord(floater.position.y, WORLD_HEIGHT)
-            )
+            floater.position.addScaledInPlace(floater.velocity, deltaTime)
+            floater.position.wrapInPlace(WORLD_WIDTH, WORLD_HEIGHT)
         }
     }
 
     private fun updateAmbient(deltaTime: Float) {
         for (p in ambientParticles) {
-            p.position = p.position + (p.velocity * deltaTime)
-            p.position = Vector2(
-                wrapCoord(p.position.x, WORLD_WIDTH),
-                wrapCoord(p.position.y, WORLD_HEIGHT)
-            )
+            p.position.addScaledInPlace(p.velocity, deltaTime)
+            p.position.wrapInPlace(WORLD_WIDTH, WORLD_HEIGHT)
         }
     }
 

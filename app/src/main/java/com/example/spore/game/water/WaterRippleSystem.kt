@@ -70,11 +70,16 @@ class WaterRippleSystem(
 
         val ripple = obtainRipple() ?: return
         val angle = velocity.angle()
-        // Offset slightly behind the cell to simulate propulsion wake
-        val rearOffset = Vector2.fromAngle(angle + Math.PI.toFloat(), cellRadius * 0.75f)
+        // Offset slightly behind the cell to simulate propulsion wake (zero allocation:
+        // rearOffset is computed inline instead of through an intermediate Vector2)
+        val rearAngle = angle + Math.PI.toFloat()
+        val rearOff = cellRadius * 0.75f
 
         ripple.id = nextRippleId++
-        ripple.position = position + rearOffset
+        ripple.position.set(
+            position.x + cos(rearAngle) * rearOff,
+            position.y + sin(rearAngle) * rearOff
+        )
         ripple.currentRadius = cellRadius * 0.4f
         ripple.maxRadius = (cellRadius * 2.8f + speed * 0.35f) * intensity
         ripple.expansionSpeed = (140f + speed * 0.5f) * intensity
@@ -88,9 +93,11 @@ class WaterRippleSystem(
 
         // Spawn a couple micro cavitation bubbles
         if (speed > 80f && Random.nextFloat() < 0.45f) {
-            emitBubble(
-                pos = position + rearOffset + Vector2(Random.nextFloat() * 10f - 5f, Random.nextFloat() * 10f - 5f),
-                vel = Vector2.fromAngle(angle + Math.PI.toFloat() + (Random.nextFloat() * 0.6f - 0.3f), speed * 0.2f),
+            emitBubbleAt(
+                px = ripple.position.x + Random.nextFloat() * 10f - 5f,
+                py = ripple.position.y + Random.nextFloat() * 10f - 5f,
+                velAngle = rearAngle + (Random.nextFloat() * 0.6f - 0.3f),
+                velMag = speed * 0.2f,
                 color = color.copy(alpha = 0.7f)
             )
         }
@@ -121,9 +128,11 @@ class WaterRippleSystem(
         for (i in 0 until 8) {
             val angle = Random.nextFloat() * 2f * Math.PI.toFloat()
             val speed = Random.nextFloat() * 90f + 40f
-            emitBubble(
-                pos = position + Vector2.fromAngle(angle, cellRadius * 0.5f),
-                vel = Vector2.fromAngle(angle, speed),
+            emitBubbleAt(
+                px = position.x + cos(angle) * (cellRadius * 0.5f),
+                py = position.y + sin(angle) * (cellRadius * 0.5f),
+                velAngle = angle,
+                velMag = speed,
                 color = Color.White
             )
         }
@@ -148,9 +157,17 @@ class WaterRippleSystem(
     }
 
     fun emitBubble(pos: Vector2, vel: Vector2, color: Color = Color.White) {
+        emitBubbleAt(px = pos.x, py = pos.y, velAngle = vel.angle(), velMag = vel.length(), color = color)
+    }
+
+    /**
+     * Zero-allocation bubble spawn: writes position/velocity fields directly instead of
+     * building intermediate Vector2 objects on the per-frame emission hot path.
+     */
+    private fun emitBubbleAt(px: Float, py: Float, velAngle: Float, velMag: Float, color: Color) {
         val bubble = obtainBubble() ?: return
-        bubble.position = pos
-        bubble.velocity = vel
+        bubble.position.set(px, py)
+        bubble.velocity.setFromAngle(velAngle, velMag)
         bubble.radius = Random.nextFloat() * 3.5f + 1.5f
         bubble.alpha = Random.nextFloat() * 0.4f + 0.4f
         bubble.life = 0f
@@ -198,14 +215,14 @@ class WaterRippleSystem(
             }
         }
 
-        // Update bubbles
+        // Update bubbles (in-place integration, zero allocation)
         for (i in 0 until MAX_BUBBLES) {
             val b = bubblePool[i]
             if (!b.isActive) continue
 
             b.life += dt
-            b.position = b.position + (b.velocity * dt)
-            b.velocity = b.velocity * 0.94f // fluid drag
+            b.position.addScaledInPlace(b.velocity, dt)
+            b.velocity.scaleInPlace(0.94f) // fluid drag
 
             if (b.life >= b.maxLife) {
                 b.isActive = false

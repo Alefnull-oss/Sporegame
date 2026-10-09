@@ -559,10 +559,11 @@ class OceanTerrainSystem(
 
     /**
      * Seamless toroidal 2D noise projection to ensure 100% boundary-free continuity.
+     * Takes raw coordinates (zero-allocation) instead of building a Vector2 per call.
      */
-    private fun getToroidalNoise(noise: FastNoiseLite, pos: Vector2): Float {
-        val wx = (pos.x % worldSize + worldSize) % worldSize
-        val wy = (pos.y % worldSize + worldSize) % worldSize
+    private fun getToroidalNoise(noise: FastNoiseLite, posX: Float, posY: Float): Float {
+        val wx = (posX % worldSize + worldSize) % worldSize
+        val wy = (posY % worldSize + worldSize) % worldSize
         val u = wx / worldSize
         val v = wy / worldSize
         val r = worldSize * 0.15f
@@ -574,15 +575,19 @@ class OceanTerrainSystem(
         return (noise.getNoise(nx1 + nx2, ny1 - ny2) + noise.getNoise(nx1 - nx2, ny1 + ny2)) * 0.5f
     }
 
+    fun getDepthFactor(pos: Vector2): Float {
+        return getDepthFactor(pos.x, pos.y)
+    }
+
     /**
      * Calculates the raw normalized bathymetric depth factor (0.0 to 1.0) using FastNoiseLite
      * combining multi-octave Simplex bathymetry with Voronoi fault line trenches.
      */
-    fun getDepthFactor(pos: Vector2): Float {
+    fun getDepthFactor(posX: Float, posY: Float): Float {
         // Multi-octave Simplex terrain
-        val simplexDepth = (getToroidalNoise(bathymetryNoise, pos) + 1.0f) * 0.5f
+        val simplexDepth = (getToroidalNoise(bathymetryNoise, posX, posY) + 1.0f) * 0.5f
         // Cellular Voronoi trench fissures (Hadal trenches along cell boundaries)
-        val voronoiTrench = (getToroidalNoise(cellularTrenchNoise, pos) + 1.0f) * 0.5f
+        val voronoiTrench = (getToroidalNoise(cellularTrenchNoise, posX, posY) + 1.0f) * 0.5f
 
         // Deepen into abyss where voronoi fault line occurs
         val combined = simplexDepth * 0.7f + voronoiTrench * 0.3f
@@ -593,7 +598,7 @@ class OceanTerrainSystem(
      * Determines whether a location is inside a rich plankton bloom zone using Cellular noise.
      */
     fun isNutrientBloomZone(pos: Vector2): Boolean {
-        val n = (getToroidalNoise(nutrientBloomNoise, pos) + 1.0f) * 0.5f
+        val n = (getToroidalNoise(nutrientBloomNoise, pos.x, pos.y) + 1.0f) * 0.5f
         return n > 0.68f
     }
 
@@ -601,7 +606,12 @@ class OceanTerrainSystem(
      * Determines the ocean biome at any coordinates using continuous 2D procedural mapping.
      */
     fun getBiomeAt(pos: Vector2): OceanBiomeType {
-        val depthVal = getDepthFactor(pos)
+        return getBiomeAt(pos.x, pos.y)
+    }
+
+    /** Zero-allocation variant taking raw coordinates. */
+    fun getBiomeAt(posX: Float, posY: Float): OceanBiomeType {
+        val depthVal = getDepthFactor(posX, posY)
         return when {
             depthVal < 0.22f -> OceanBiomeType.SUNLIT_SHALLOWS
             depthVal < 0.44f -> OceanBiomeType.CORAL_REEF
@@ -620,15 +630,23 @@ class OceanTerrainSystem(
      * Divergence-free fluid flow field generates authentic spiral gyres, eddies and jet streams.
      */
     fun getCurrentVelocityAt(pos: Vector2): Vector2 {
+        return getCurrentVelocityInto(pos, Vector2())
+    }
+
+    /**
+     * Zero-allocation variant of [getCurrentVelocityAt]: writes the curl-noise flow vector
+     * into the reusable [out] vector (callers pass a scratch instance on hot paths).
+     */
+    fun getCurrentVelocityInto(pos: Vector2, out: Vector2): Vector2 {
         val delta = 30f
-        val biome = getBiomeAt(pos)
+        val biome = getBiomeAt(pos.x, pos.y)
         val speedBase = 20f * biome.currentSpeedMultiplier
 
         // Incompressible 2D Curl Noise: v = (dPsi/dy, -dPsi/dx)
-        val psiY1 = getToroidalNoise(currentCurlNoise, Vector2(pos.x, pos.y + delta))
-        val psiY0 = getToroidalNoise(currentCurlNoise, Vector2(pos.x, pos.y - delta))
-        val psiX1 = getToroidalNoise(currentCurlNoise, Vector2(pos.x + delta, pos.y))
-        val psiX0 = getToroidalNoise(currentCurlNoise, Vector2(pos.x - delta, pos.y))
+        val psiY1 = getToroidalNoise(currentCurlNoise, pos.x, pos.y + delta)
+        val psiY0 = getToroidalNoise(currentCurlNoise, pos.x, pos.y - delta)
+        val psiX1 = getToroidalNoise(currentCurlNoise, pos.x + delta, pos.y)
+        val psiX0 = getToroidalNoise(currentCurlNoise, pos.x - delta, pos.y)
 
         val dPsiDy = (psiY1 - psiY0) / (2f * delta)
         val dPsiDx = (psiX1 - psiX0) / (2f * delta)
@@ -641,7 +659,8 @@ class OceanTerrainSystem(
             vx += 16f * biome.currentSpeedMultiplier
         }
 
-        return Vector2(vx, vy)
+        out.set(vx, vy)
+        return out
     }
 
     fun update(deltaTime: Float, playerPosition: Vector2? = null) {
@@ -700,8 +719,12 @@ class OceanTerrainSystem(
                     if (b != null) {
                         val angle = -PI.toFloat() / 2f + (Random.nextFloat() * 0.5f - 0.25f)
                         val speed = Random.nextFloat() * 80f + 60f
-                        b.position = vent.position + Vector2(Random.nextFloat() * 16f - 8f, -vent.chimneyHeight * 0.8f)
-                        b.velocity = Vector2.fromAngle(angle, speed)
+                        // Zero-allocation spawn: direct field writes
+                        b.position.set(
+                            vent.position.x + Random.nextFloat() * 16f - 8f,
+                            vent.position.y - vent.chimneyHeight * 0.8f
+                        )
+                        b.velocity.setFromAngle(angle, speed)
                         b.radius = Random.nextFloat() * 3f + 1.5f
                         b.alpha = Random.nextFloat() * 0.4f + 0.5f
                         b.life = 0f
@@ -713,13 +736,14 @@ class OceanTerrainSystem(
             }
         }
 
-        // 3. Update vent bubbles with zero iterator allocation
+        // 3. Update vent bubbles with zero iterator allocation and in-place integration
         for (i in 0 until MAX_VENT_BUBBLES) {
             val b = ventBubbles[i]
             if (!b.isActive) continue
             b.life += dt
-            b.position = b.position + (b.velocity * dt)
-            b.velocity = b.velocity * 0.98f + Vector2(0f, -8f * dt) // buoyancy
+            b.position.addScaledInPlace(b.velocity, dt)
+            b.velocity.scaleInPlace(0.98f) // fluid drag
+            b.velocity.y += -8f * dt // buoyancy
             b.alpha = ((1f - b.life / b.maxLife) * 0.7f).coerceIn(0f, 1f)
             if (b.life >= b.maxLife) {
                 b.isActive = false

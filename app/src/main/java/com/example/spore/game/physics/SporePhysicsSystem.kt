@@ -126,36 +126,51 @@ class ElasticAppendageChain(
         deltaTime: Float,
         wavyPulse: Float = 0f
     ) {
+        // Zero-allocation elastic chain solver: identical spring/drag/distance-constraint
+        // math to the previous Vector2-operator version, but computed on raw float fields
+        // so the ~23 cells x N chains x 5 segments per frame no longer allocate thousands
+        // of intermediate Vector2 objects (a major GC-stutter source on low-RAM devices).
         val dt = deltaTime.coerceIn(0.005f, 0.04f)
-        var anchor = rootPos
+        var anchorX = rootPos.x
+        var anchorY = rootPos.y
 
         // Root segment aligns opposite to cell forward direction + sinusoidal swim stroke
-        val rootDir = SporeVector2(cos(rootAngle + PI.toFloat() + wavyPulse), sin(rootAngle + PI.toFloat() + wavyPulse))
+        val dirAngle = rootAngle + PI.toFloat() + wavyPulse
+        val rootDirX = cos(dirAngle)
+        val rootDirY = sin(dirAngle)
 
         for (i in 0 until segmentCount) {
             val seg = segments[i]
-            val prevPos = seg.position
 
             // Target position based on joint length and chain propagation
-            val targetPos = anchor + rootDir * (seg.length * (i + 1))
-            val offset = targetPos - seg.position
+            val targetX = anchorX + rootDirX * (seg.length * (i + 1))
+            val targetY = anchorY + rootDirY * (seg.length * (i + 1))
+            val offsetX = targetX - seg.position.x
+            val offsetY = targetY - seg.position.y
 
             // Hydrodynamic drag: water resists movement perpendicular to segment orientation
             val waterDrag = 0.88f
-            seg.velocity = (seg.velocity + offset * (40f * dt)) * waterDrag - cellVelocity * (0.15f * (i + 1))
-            seg.position = seg.position + seg.velocity * dt
+            seg.velocity.x = (seg.velocity.x + offsetX * (40f * dt)) * waterDrag - cellVelocity.x * (0.15f * (i + 1))
+            seg.velocity.y = (seg.velocity.y + offsetY * (40f * dt)) * waterDrag - cellVelocity.y * (0.15f * (i + 1))
+            seg.position.x += seg.velocity.x * dt
+            seg.position.y += seg.velocity.y * dt
 
             // Maintain distance constraint (inverse kinematics spring)
-            val toAnchor = seg.position - anchor
-            val dist = toAnchor.length()
+            val toAnchorX = seg.position.x - anchorX
+            val toAnchorY = seg.position.y - anchorY
+            val dist = sqrt(toAnchorX * toAnchorX + toAnchorY * toAnchorY)
             if (dist > 0.001f) {
-                seg.position = anchor + toAnchor.normalized() * seg.length
+                val scale = seg.length / dist
+                seg.position.x = anchorX + toAnchorX * scale
+                seg.position.y = anchorY + toAnchorY * scale
             } else {
-                seg.position = anchor + rootDir * seg.length
+                seg.position.x = anchorX + rootDirX * seg.length
+                seg.position.y = anchorY + rootDirY * seg.length
             }
 
-            seg.angle = atan2(seg.position.y - anchor.y, seg.position.x - anchor.x)
-            anchor = seg.position
+            seg.angle = atan2(seg.position.y - anchorY, seg.position.x - anchorX)
+            anchorX = seg.position.x
+            anchorY = seg.position.y
         }
     }
 }
