@@ -63,6 +63,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -71,12 +72,99 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.spore.data.model.PlanetDefinition
+import com.example.spore.ui.components.StrokeCache
 import com.example.spore.ui.viewmodel.AppScreen
 import com.example.spore.ui.viewmodel.SporeViewModel
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.sqrt
+
+// ---------------------------------------------------------------------------
+// Cached unit-gradient brushes for the galaxy canvas (previously ~12 fresh
+// Brush allocations per frame: nebula, pulsing core, 5 planet halos and 5
+// planet bodies). All brushes are built once in UNIT space (center = origin,
+// radius = 1) and positioned with canvas transforms, so panning/rotating the
+// galaxy allocates nothing.
+// ---------------------------------------------------------------------------
+private val galaxyBrushes = HashMap<Long, Brush>()
+
+private fun galaxyNebulaBrush(): Brush {
+    var b = galaxyBrushes[1L]
+    if (b == null) {
+        b = Brush.radialGradient(
+            listOf(
+                Color(0xFF1A237E).copy(alpha = 0.35f),
+                Color(0xFF311B92).copy(alpha = 0.20f),
+                Color(0xFF0D47A1).copy(alpha = 0.10f),
+                Color.Transparent
+            ),
+            center = Offset.Zero,
+            radius = 1f
+        )
+        galaxyBrushes[1L] = b
+    }
+    return b
+}
+
+private fun galaxyCoreBrush(glowBucket: Int): Brush {
+    val key = 2L + glowBucket
+    var b = galaxyBrushes[key]
+    if (b == null) {
+        val glow = glowBucket / 32f
+        b = Brush.radialGradient(
+            listOf(
+                Color.White,
+                Color(0xFFFFD54F).copy(alpha = 0.85f * glow),
+                Color(0xFFFF6D00).copy(alpha = 0.45f * glow),
+                Color.Transparent
+            ),
+            center = Offset.Zero,
+            radius = 1f
+        )
+        galaxyBrushes[key] = b
+    }
+    return b
+}
+
+private fun planetHaloBrush(colorHex: Long, selected: Boolean): Brush {
+    val key = 1000L + colorHex * 2L + (if (selected) 1L else 0L)
+    var b = galaxyBrushes[key]
+    if (b == null) {
+        b = Brush.radialGradient(
+            listOf(
+                Color(colorHex).copy(alpha = if (selected) 0.65f else 0.35f),
+                Color.Transparent
+            ),
+            center = Offset.Zero,
+            radius = 1f
+        )
+        galaxyBrushes[key] = b
+    }
+    return b
+}
+
+private fun planetBodyBrush(planet: PlanetDefinition): Brush {
+    val key = 2000L + planet.id.hashCode()
+    var b = galaxyBrushes[key]
+    if (b == null) {
+        // Unit-space equivalent of radialGradient(
+        //   colors = [atmosphere, planetColor, oceanBg2],
+        //   center = planetCenter - Offset(pr*0.3, pr*0.3), radius = pr*1.2)
+        // drawn inside a transform scaled by pr*1.2.
+        b = Brush.radialGradient(
+            listOf(
+                Color(planet.atmosphereColorHex),
+                Color(planet.planetColorHex),
+                Color(planet.oceanBgColor2)
+            ),
+            center = Offset(-0.25f, -0.25f), // (-0.3pr) / (1.2pr)
+            radius = 1f
+        )
+        galaxyBrushes[key] = b
+    }
+    return b
+}
 
 @Composable
 fun GalaxyMapScreen(
@@ -148,21 +236,13 @@ fun GalaxyMapScreen(
                     }
                 }
         ) {
-            // Galaxy Background Deep Nebula Glow
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(
-                        Color(0xFF1A237E).copy(alpha = 0.35f),
-                        Color(0xFF311B92).copy(alpha = 0.20f),
-                        Color(0xFF0D47A1).copy(alpha = 0.10f),
-                        Color.Transparent
-                    ),
-                    center = galaxyCenter,
-                    radius = 360f
-                ),
-                radius = 360f,
-                center = galaxyCenter
-            )
+            // Galaxy Background Deep Nebula Glow (cached unit gradient + transform)
+            withTransform({
+                translate(galaxyCenter.x, galaxyCenter.y)
+                scale(360f, 360f)
+            }) {
+                drawCircle(brush = galaxyNebulaBrush(), radius = 1f, center = Offset.Zero)
+            }
 
             // Spiral Star Dust Arms (drawn procedurally)
             val starCount = 180
@@ -183,21 +263,15 @@ fun GalaxyMapScreen(
                 )
             }
 
-            // Galactic Core (Blazing supermassive center)
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(
-                        Color.White,
-                        Color(0xFFFFD54F).copy(alpha = 0.85f * coreGlow),
-                        Color(0xFFFF6D00).copy(alpha = 0.45f * coreGlow),
-                        Color.Transparent
-                    ),
-                    center = galaxyCenter,
-                    radius = 65f * coreGlow
-                ),
-                radius = 65f * coreGlow,
-                center = galaxyCenter
-            )
+            // Galactic Core (Blazing supermassive center; cached quantized unit gradient)
+            val coreBucket = (coreGlow * 32f).toInt().coerceIn(24, 32)
+            val coreR = 65f * coreGlow
+            withTransform({
+                translate(galaxyCenter.x, galaxyCenter.y)
+                scale(coreR, coreR)
+            }) {
+                drawCircle(brush = galaxyCoreBrush(coreBucket), radius = 1f, center = Offset.Zero)
+            }
 
             // Draw Orbit Trajectories & Planets
             for (planet in PlanetDefinition.PLANETS) {
@@ -208,7 +282,7 @@ fun GalaxyMapScreen(
                     color = if (isSelected) Color(planet.atmosphereColorHex).copy(alpha = 0.45f) else Color.White.copy(alpha = 0.08f),
                     radius = planet.galaxyDistance,
                     center = galaxyCenter,
-                    style = Stroke(width = if (isSelected) 2f else 1f)
+                    style = StrokeCache.plain(if (isSelected) 2f else 1f)
                 )
 
                 // Planet position on inclined orbit
@@ -218,19 +292,14 @@ fun GalaxyMapScreen(
                 val planetCenter = Offset(planetX, planetY)
                 val pr = planet.sizeDp * 0.45f
 
-                // Atmosphere halo
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(
-                            Color(planet.atmosphereColorHex).copy(alpha = if (isSelected) 0.65f else 0.35f),
-                            Color.Transparent
-                        ),
-                        center = planetCenter,
-                        radius = pr * 1.55f
-                    ),
-                    radius = pr * 1.55f,
-                    center = planetCenter
-                )
+                // Atmosphere halo (cached unit gradient + transform)
+                val haloR = pr * 1.55f
+                withTransform({
+                    translate(planetX, planetY)
+                    scale(haloR, haloR)
+                }) {
+                    drawCircle(brush = planetHaloBrush(planet.atmosphereColorHex, isSelected), radius = 1f, center = Offset.Zero)
+                }
 
                 // Clay Drop Shadow
                 drawCircle(
@@ -239,20 +308,15 @@ fun GalaxyMapScreen(
                     center = planetCenter + Offset(2f, 3f)
                 )
 
-                // Planet Ocean Mass (Clay 3D ball)
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(
-                            Color(planet.atmosphereColorHex),
-                            Color(planet.planetColorHex),
-                            Color(planet.oceanBgColor2)
-                        ),
-                        center = planetCenter - Offset(pr * 0.3f, pr * 0.3f),
-                        radius = pr * 1.2f
-                    ),
-                    radius = pr,
-                    center = planetCenter
-                )
+                // Planet Ocean Mass (Clay 3D ball; cached unit gradient + transform,
+                // gradient radius pr*1.2 with the drawn circle at pr -> 0.8333 in unit space)
+                withTransform({
+                    translate(planetX, planetY)
+                    val gr = pr * 1.2f
+                    scale(gr, gr)
+                }) {
+                    drawCircle(brush = planetBodyBrush(planet), radius = pr / (pr * 1.2f), center = Offset.Zero)
+                }
 
                 // Continents (Clay spots)
                 drawCircle(
@@ -279,13 +343,13 @@ fun GalaxyMapScreen(
                         color = Color.White,
                         radius = pr + 8f,
                         center = planetCenter,
-                        style = Stroke(width = 2.5f)
+                        style = StrokeCache.plain(2.5f)
                     )
                     drawCircle(
                         color = Color(planet.atmosphereColorHex),
                         radius = pr + 12f,
                         center = planetCenter,
-                        style = Stroke(width = 1.5f)
+                        style = StrokeCache.plain(1.5f)
                     )
                 }
             }

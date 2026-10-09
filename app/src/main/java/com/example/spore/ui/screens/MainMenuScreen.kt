@@ -49,6 +49,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -62,6 +63,46 @@ import com.example.spore.ui.components.CellVisualRenderer
 import com.example.spore.ui.viewmodel.AppScreen
 import com.example.spore.ui.viewmodel.SporeViewModel
 import kotlin.math.sin
+
+// ---------------------------------------------------------------------------
+// Cached background assets: the menu canvas previously allocated a List of 4
+// pairs plus 4 radial gradient brushes (and a vertical gradient) EVERY FRAME.
+// The floater geometry/colors are static tables and the glow brushes are cached
+// UNIT gradients (center = origin, radius = 1) positioned via withTransform,
+// which keeps the visuals identical with zero steady-state allocations.
+// ---------------------------------------------------------------------------
+private val MENU_FLOATER_X = floatArrayOf(0.18f, 0.82f, 0.25f, 0.78f)
+private val MENU_FLOATER_Y = floatArrayOf(0.22f, 0.35f, 0.80f, 0.75f)
+private val MENU_FLOATER_PHASE = floatArrayOf(0f, 1f, 2f, 3f)
+private val MENU_FLOATER_FREQ = floatArrayOf(1.5f, 1.2f, 1.8f, 1.4f)
+private val MENU_FLOATER_AMP = floatArrayOf(20f, 25f, 18f, 22f)
+private val MENU_FLOATER_COLORS = intArrayOf(0xFF00E5FF.toInt(), 0xFF76FF03.toInt(), 0xFFFF5252.toInt(), 0xFFFFD600.toInt())
+
+private val menuFloaterBrushes = HashMap<Int, Brush>()
+private val menuBgBrushes = HashMap<Int, Brush>()
+
+private fun menuFloaterBrush(colorHex: Int): Brush {
+    var b = menuFloaterBrushes[colorHex]
+    if (b == null) {
+        b = Brush.radialGradient(
+            listOf(Color(colorHex).copy(alpha = 0.25f), Color.Transparent),
+            center = Offset.Zero,
+            radius = 1f
+        )
+        menuFloaterBrushes[colorHex] = b
+    }
+    return b
+}
+
+private fun menuBgBrush(h: Float): Brush {
+    val key = (h / 64f).toInt()
+    var b = menuBgBrushes[key]
+    if (b == null) {
+        b = Brush.verticalGradient(listOf(Color(0xFF061426), Color(0xFF020710)), 0f, h)
+        menuBgBrushes[key] = b
+    }
+    return b
+}
 
 @Composable
 fun MainMenuScreen(
@@ -104,33 +145,20 @@ fun MainMenuScreen(
             val w = size.width
             val h = size.height
 
-            // Deep gradient
-            drawRect(
-                brush = Brush.verticalGradient(
-                    colors = listOf(Color(0xFF061426), Color(0xFF020710)),
-                    startY = 0f,
-                    endY = h
-                )
-            )
+            // Deep gradient (cached: fixed colors, stable screen size)
+            drawRect(brush = menuBgBrush(h))
 
-            // Floating background cells
-            val floaters = listOf(
-                Offset(w * 0.18f, h * 0.22f + sin(animTime * 1.5f) * 20f) to Color(0xFF00E5FF),
-                Offset(w * 0.82f, h * 0.35f + sin(animTime * 1.2f + 1f) * 25f) to Color(0xFF76FF03),
-                Offset(w * 0.25f, h * 0.80f + sin(animTime * 1.8f + 2f) * 18f) to Color(0xFFFF5252),
-                Offset(w * 0.78f, h * 0.75f + sin(animTime * 1.4f + 3f) * 22f) to Color(0xFFFFD600)
-            )
-
-            for ((pos, col) in floaters) {
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(col.copy(alpha = 0.25f), Color.Transparent),
-                        center = pos,
-                        radius = 80f
-                    ),
-                    radius = 80f,
-                    center = pos
-                )
+            // Floating background cells (static tables + cached unit glow brushes + transform)
+            for (i in 0 until 4) {
+                val fx = w * MENU_FLOATER_X[i]
+                val fy = h * MENU_FLOATER_Y[i] + sin(animTime * MENU_FLOATER_FREQ[i] + MENU_FLOATER_PHASE[i]) * MENU_FLOATER_AMP[i]
+                val brush = menuFloaterBrush(MENU_FLOATER_COLORS[i])
+                withTransform({
+                    translate(fx, fy)
+                    scale(80f, 80f)
+                }) {
+                    drawCircle(brush = brush, radius = 1f, center = Offset.Zero)
+                }
             }
 
             // Preview player's cell swimming gently in the center
